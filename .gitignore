@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------
+# PRIVACY: never commit face photographs or derived per-image data
+# ---------------------------------------------------------------
+# Photo session directories (primary location is ~/FaceAgeData, outside
+# this repo, but these rules defend against copies landing here too).
+data/
+sessions/
+photos/
+validation/images/
+**/sessions/
+**/*_faces/
+
+# Any image file, anywhere in the repo, regardless of directory.
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+*.png
+*.PNG
+*.heic
+*.HEIC
+*.heif
+*.HEIF
+*.tif
+*.tiff
+*.bmp
+*.webp
+*.gif
+
+# ---------------------------------------------------------------
+# Model weights (92 MB, redistributable only from the AIM-Harvard release)
+# ---------------------------------------------------------------
+models/
+*.h5
+*.pb
+*.ckpt
+saved_model/
+
+# ---------------------------------------------------------------
+# Outputs: per-image FaceAge values and the longitudinal series
+# ---------------------------------------------------------------
+outputs/
+results/
+*_per_image.csv
+*_session.csv
+faceage_history.csv
+
+# Validation run outputs (the upstream reference CSV IS tracked, see below)
+validation/runs/
+
+# ---------------------------------------------------------------
+# Python / tooling
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
+*.log
+
+# ---------------------------------------------------------------
+# Explicitly re-include the small tracked assets we DO want in git
+# ---------------------------------------------------------------
+!validation/reference/
+!validation/reference/*.csv

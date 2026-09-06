@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# FaceAge — local monthly scoring pipeline.
+#   faceage run [YYYY-MM-DD]   score a photo session (default: today)
+#   faceage validate           re-run the reference-CSV validation
+#   faceage history            show the longitudinal series
+#   faceage build              rebuild the container image
+#   faceage doctor             check the environment
+set -euo pipefail
+
+REPO="${FACEAGE_REPO:-$HOME/Documents/GitHub/FaceAge}"
+DATA="${FACEAGE_DATA:-$HOME/FaceAgeData}"
+IMAGE="${FACEAGE_IMAGE:-faceage:cpu-py36}"
+MODEL="$REPO/models/faceage_model.h5"
+HISTORY="$DATA/results/faceage_history.csv"
+WEIGHTS_URL="https://github.com/AIM-Harvard/FaceAge/releases/download/v1/faceage_model.h5"
+WEIGHTS_SHA="dd43eb66616558a70f86d55d405c2e5be1e49569654b7eb852c206393fd7a85d"
+
+die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[36m%s\033[0m\n' "$*"; }
+
+ensure_colima() {
+  command -v colima >/dev/null || die "colima not installed. Run: brew install colima docker"
+  if ! colima status >/dev/null 2>&1; then
+    info "Starting the Colima VM (first run of the day takes ~30s)..."
+    colima start --vm-type=vz --vz-rosetta --cpu 4 --memory 8 --disk 60
+  fi
+}
+
+ensure_model() {
+  [[ -f "$MODEL" ]] || die "model weights missing at $MODEL
+Download them with:
+  curl -L -o '$MODEL' '$WEIGHTS_URL'"
+}
+
+ensure_image() {
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || die "container image '$IMAGE' not found. Run: faceage build"
+}
+
+cmd_build() {
+  ensure_colima
+  info "Building $IMAGE for linux/amd64 (this takes ~10 minutes)..."
+  docker build --platform linux/amd64 -f "$REPO/docker/Dockerfile" -t "$IMAGE" "$REPO"
+  info "Done."
+}
+
+cmd_run() {
+  local date_arg="${1:-$(date +%F)}"
+  local session_dir="$DATA/sessions/$date_arg"
+  [[ -d "$session_dir" ]] || die "no session folder at $session_dir
+Create it and drop this session's .jpg/.png photos in, then re-run."
+
+  local n
+  n=$(find "$session_dir" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.png' \) | wc -l | tr -d ' ')
+  [[ "$n" -gt 0 ]] || die "no .jpg/.png photos in $session_dir"
+
+  ensure_colima; ensure_model; ensure_image
+  mkdir -p "$DATA/results"
+
+  info "Scoring $n photo(s) for session $date_arg"
+  docker run --rm --platform linux/amd64 \
+    -v "$session_dir:/work/input:ro" \
+    -v "$REPO/models:/opt/faceage/models:ro" \
+    -v "$DATA/results:/work/results" \
+    "$IMAGE" \
+    --mode session \
+    --input /work/input \
+    --session-date "$date_arg" \
+    --out-per-image "/work/results/${date_arg}_per_image.csv" \
+    --out-summary "/work/results/${date_arg}_summary.json" \
+    --history /work/results/faceage_history.csv \
+    "${@:2}" 2>&1 | grep -vE '^(WARNING:|[0-9]{4}-[0-9]{2}-[0-9]{2} )' || true
+
+  echo
+  info "Results: $DATA/results/${date_arg}_per_image.csv"
+  info "Series : $HISTORY"
+}
+
+cmd_validate() {
+  ensure_colima; ensure_model; ensure_image
+  mkdir -p "$REPO/validation/runs"
+  local n
+  n=$(find "$REPO/validation/images" -maxdepth 1 -type f -iname '*.jpg' 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$n" -gt 0 ]] || die "no validation images in $REPO/validation/images (see README)"
+  info "Validating against the authors' reference CSV using $n image(s)..."
+  docker run --rm --platform linux/amd64 \
+    -v "$REPO/validation/images:/work/input:ro" \
+    -v "$REPO/models:/opt/faceage/models:ro" \
+    -v "$REPO/validation:/work/validation" \
+    "$IMAGE" \
+    --mode validate \
+    --input /work/input \
+    --reference /work/validation/reference/utk_hi-res_qa_res.csv \
+    --out-per-image /work/validation/runs/reproduced.csv \
+    --tolerance "${1:-1e-4}" 2>&1 | grep -vE '^(WARNING:|[0-9]{4}-[0-9]{2}-[0-9]{2} )|localization step|estimation step'
+}
+
+cmd_history() {
+  [[ -f "$HISTORY" ]] || die "no history yet at $HISTORY — run a session first"
+  column -s, -t < "$HISTORY"
+}
+
+cmd_doctor() {
+  printf 'host arch        : %s\n' "$(uname -m)"
+  printf 'colima           : %s\n' "$(command -v colima >/dev/null && colima status 2>&1 | head -1 || echo 'NOT INSTALLED')"
+  printf 'docker           : %s\n' "$(command -v docker >/dev/null && docker --version || echo 'NOT INSTALLED')"
+  printf 'image %-11s: %s\n' "$IMAGE" "$(docker image inspect "$IMAGE" >/dev/null 2>&1 && echo present || echo MISSING)"
+  if [[ -f "$MODEL" ]]; then
+    local sha; sha=$(shasum -a 256 "$MODEL" | cut -d' ' -f1)
+    printf 'weights          : present, sha256 %s %s\n' "${sha:0:16}..." \
+      "$([[ "$sha" == "$WEIGHTS_SHA" ]] && echo '(matches release v1 ✓)' || echo '(UNEXPECTED HASH)')"
+  else
+    printf 'weights          : MISSING (%s)\n' "$MODEL"
+  fi
+  printf 'photo root       : %s\n' "$DATA"
+  printf 'sessions found   : %s\n' "$(ls -1 "$DATA/sessions" 2>/dev/null | wc -l | tr -d ' ')"
+  printf 'history rows     : %s\n' "$([[ -f "$HISTORY" ]] && echo $(($(wc -l < "$HISTORY")-1)) || echo 0)"
+}
+
+case "${1:-}" in
+  run)      shift; cmd_run "$@" ;;
+  validate) shift; cmd_validate "$@" ;;
+  history)  cmd_history ;;
+  build)    cmd_build ;;
+  doctor)   cmd_doctor ;;
+  *) cat <<USAGE
+FaceAge — local monthly scoring pipeline
+
+  faceage run [YYYY-MM-DD]   score photos in ~/FaceAgeData/sessions/<date>
+  faceage validate [tol]     re-run validation against the authors' CSV
+  faceage history            print the longitudinal series
+  faceage build              (re)build the linux/amd64 container image
+  faceage doctor             check environment, weights hash, session count
+
+Extra flags after 'run' pass through, e.g.
+  faceage run 2026-09-06 --include-flagged
+  faceage run 2026-09-06 --min-face-fill 0.6
+USAGE
+    exit 1 ;;
+esac
