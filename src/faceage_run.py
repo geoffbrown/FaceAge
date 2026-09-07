@@ -91,7 +91,10 @@ def predict_faceage(model, img, mtcnn_output_dict):
     pat_face = (pat_face - mean) / std
     pat_face_input = pat_face.reshape(1, MODEL_INPUT_SIZE[0], MODEL_INPUT_SIZE[1], 3)
 
-    return float(np.squeeze(model.predict(pat_face_input)))
+    # mean/std of the crop BEFORE standardization are the exposure and contrast the
+    # camera actually delivered. Measured 2026-09-06: a 3x exposure range moved FaceAge
+    # by 3.7 years, so these are tracked to catch lighting drift between sessions.
+    return float(np.squeeze(model.predict(pat_face_input))), float(mean), float(std)
 
 
 # ----------------------------------------------------------------------------
@@ -262,7 +265,10 @@ def run(args):
               % (idx + 1, len(predictable), rec['subj_id']), end='\r')
         sys.stdout.flush()
         try:
-            rec['faceage'] = predict_faceage(model, rec['img'], rec['faces'][0])
+            age, luma_mean, luma_std = predict_faceage(model, rec['img'], rec['faces'][0])
+            rec['faceage'] = age
+            rec['metrics']['crop_luma_mean'] = round(luma_mean, 2)
+            rec['metrics']['crop_luma_std'] = round(luma_std, 2)
         except Exception as exc:
             rec['hard'].append('PREDICTION_FAILED')
             rec['error'] = str(exc)
@@ -304,12 +310,15 @@ def write_per_image(records, path, strict):
             'source_h': m.get('source_h'),
             'crop_w': m.get('crop_w'),
             'crop_h': m.get('crop_h'),
+            'crop_luma_mean': m.get('crop_luma_mean'),
+            'crop_luma_std': m.get('crop_luma_std'),
             'face_fill_height_frac': m.get('face_fill_height_frac'),
             'face_fill_area_frac': m.get('face_fill_area_frac'),
             'error': r.get('error', ''),
         })
     cols = ['subj_id', 'file', 'faceage', 'status', 'hard_flags', 'advisory_flags',
             'confidence', 'n_faces', 'source_w', 'source_h', 'crop_w', 'crop_h',
+            'crop_luma_mean', 'crop_luma_std',
             'face_fill_height_frac', 'face_fill_area_frac', 'error']
     pd.DataFrame(rows, columns=cols).to_csv(path, index=False)
 
@@ -341,8 +350,11 @@ def summarise(records, args):
         s['std'] = float(np.std(vals, ddof=1)) if len(vals) > 1 else float('nan')
         s['min'] = float(np.min(vals))
         s['max'] = float(np.max(vals))
+        lums = [r['metrics'].get('crop_luma_mean') for r in primary
+                if r['metrics'].get('crop_luma_mean') is not None]
+        s['luma'] = float(np.mean(lums)) if lums else float('nan')
     else:
-        for k in ('mean', 'median', 'std', 'min', 'max'):
+        for k in ('mean', 'median', 'std', 'min', 'max', 'luma'):
             s[k] = float('nan')
     return s
 
@@ -477,6 +489,8 @@ def main():
         print("Std dev (n-1)  : %s" % ('n/a (single photo)' if math.isnan(s['std'])
                                        else '%.3f' % s['std']))
         print("Range          : %.3f - %.3f" % (s['min'], s['max']))
+        if not math.isnan(s.get('luma', float('nan'))):
+            print("Face exposure  : %.1f  <- keep within ~5 of prior sessions" % s['luma'])
     else:
         print("No usable photographs in this session.")
     print("")
@@ -516,6 +530,8 @@ def main():
             'std': ('' if (not s['n'] or math.isnan(s['std'])) else round(s['std'], 4)),
             'min': round(s['min'], 4) if s['n'] else '',
             'max': round(s['max'], 4) if s['n'] else '',
+            'mean_luma': (round(s['luma'], 1)
+                          if (s['n'] and not math.isnan(s.get('luma', float('nan')))) else ''),
             'model_sha256': sha256_of(args.model)[:16],
             'image_dir': args.input,
             'notes': args.notes,

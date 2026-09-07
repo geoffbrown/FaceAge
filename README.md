@@ -33,6 +33,29 @@ faceage run --replace ~/Desktop/*.jpg   # ...archiving any photos already there
 Re-running the same session date replaces that row in the history rather than
 duplicating it.
 
+### Lighting is the dominant confound
+
+Measured on this pipeline, 2026-09-06: the same photograph re-exposed across a 3x
+brightness range moved FaceAge by **3.69 years**, monotonically — darker reads older,
+brighter reads younger.
+
+| brightness | 0.5x | 0.7x | 0.85x | 1.0x | 1.2x | 1.5x |
+|---|---|---|---|---|---|---|
+| FaceAge | 43.25 | 43.65 | 42.89 | 42.18 | 42.11 | 39.96 |
+
+The per-image standardisation does *not* cancel this: brightening a JPEG compresses and
+clips highlights, altering the skin-texture contrast the model reads.
+
+For a year-long series this is the main threat to validity — seasonal daylight change
+alone could manufacture a multi-year "improvement" that is purely photographic. So:
+
+- Shoot under **fixed artificial light** in a room where you can exclude daylight.
+  Same lamp, same position, same output. This is more reliable than any time-of-day rule.
+- Lock exposure at capture (on iPhone, tap and hold for AE/AF lock).
+- Watch the **`mean_luma`** column in the history CSV. It is the mean pixel value of the
+  face crop before normalisation, on a 0-255 scale. Keep it within roughly ±5 of prior
+  sessions. If it drifts, treat that session's change as suspect until you reshoot.
+
 > **Keep the capture setup identical between sessions.** Measured on 2026-09-06, two
 > sets of ten photos taken ten minutes apart — a wide webcam shot versus a tight phone
 > shot — differed by **2.2 years** of FaceAge. Within-session precision was ±0.32
@@ -81,7 +104,7 @@ and all result CSVs, so nothing sensitive can be staged even if a copy lands her
 
 ```
 session_date, run_timestamp, n, n_total_images, n_failed, n_flagged,
-mean, median, std, min, max, model_sha256, image_dir, notes
+mean, median, std, min, max, mean_luma, model_sha256, image_dir, notes
 ```
 
 **`mean` is the number to track.** Per-photo noise on this model is large, so a single
@@ -126,6 +149,7 @@ Their worked example of a *disqualified* image was rejected for containing more 
 - Face square to the camera, neutral expression, eyes open, mouth closed.
 - No glasses, hat, or hair across the face.
 - Even, diffuse, front lighting. No hard side light, no strong backlight, no colour cast.
+- **Lighting is the single most important variable to hold constant — see below.**
 - Plain background.
 - Same spot, same time of day, same camera each month — consistency matters more than
   absolute quality for a trend.
