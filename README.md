@@ -20,11 +20,25 @@ mkdir -p ~/FaceAgeData/sessions/$(date +%F)
 faceage run
 ```
 
-`faceage run` with no argument uses today's date. To score an older session:
+`faceage run` with no argument uses today's session folder. It also accepts photos
+or a folder directly, which saves the copy step:
 
 ```bash
-faceage run 2026-08-01
+faceage run 2026-08-01                  # an earlier session folder
+faceage run ~/Desktop/pics              # score a folder in place
+faceage run ~/Desktop/pics/*.jpg        # stage those photos into today's session
+faceage run --replace ~/Desktop/*.jpg   # ...archiving any photos already there
 ```
+
+Re-running the same session date replaces that row in the history rather than
+duplicating it.
+
+> **Keep the capture setup identical between sessions.** Measured on 2026-09-06, two
+> sets of ten photos taken ten minutes apart — a wide webcam shot versus a tight phone
+> shot — differed by **2.2 years** of FaceAge. Within-session precision was ±0.32
+> (standard error), so capture setup moved the number seven times more than the
+> measurement noise, and comfortably more than a year of real change would. Same
+> camera, distance, height, lighting and time of day, every month.
 
 Other commands:
 
