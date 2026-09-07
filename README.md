@@ -75,11 +75,11 @@ faceage build        # rebuild the container image
 
 ### Installing the `faceage` command
 
-The wrapper lives at `tools/faceage`. Add it to your shell once:
+On a machine that has never run this before, use the installer — it sets up the
+container runtime, weights and `PATH` in one step. See section 5.
 
 ```bash
-echo 'export PATH="$HOME/Documents/GitHub/FaceAge/tools:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+./tools/install.sh
 ```
 
 ---
@@ -249,9 +249,63 @@ from that folder into `validation/images/` and re-run `faceage validate`.
 
 ---
 
-## 5. Rebuilding from scratch
+## 5. Installing on a new Mac
 
-On a clean machine:
+One command, from a fresh clone:
+
+```bash
+git clone https://github.com/geoffbrown/FaceAge.git ~/Documents/GitHub/FaceAge
+cd ~/Documents/GitHub/FaceAge
+./tools/install.sh
+```
+
+Then open a new terminal and confirm:
+
+```bash
+faceage doctor
+```
+
+`install.sh` is idempotent — re-run it any time; every step that is already done
+is skipped. It:
+
+1. Checks macOS version, architecture and free disk. Apple Virtualization +
+   Rosetta needs macOS 13 or newer on Apple Silicon.
+2. Installs `colima` and the `docker` CLI via Homebrew if they are missing —
+   no Docker Desktop, no licence, no admin password.
+3. Installs Rosetta 2 if the `linux/amd64` image will need it.
+4. Starts the Colima VM with the exact settings `tools/faceage` expects.
+5. Downloads the 92 MB model weights and **refuses to continue unless the
+   sha256 matches** the AIM-Harvard release.
+6. Builds the container image (~10 min under emulation).
+7. Puts `faceage` on your `PATH` and pins `FACEAGE_REPO` to this clone, so the
+   repo works wherever you put it — not only `~/Documents/GitHub/FaceAge`.
+
+The installer reads the weights URL and hash, the image name and the VM flags
+out of `tools/faceage` rather than restating them, so the two cannot drift apart.
+
+Flags: `--rebuild` forces the image to rebuild; `--skip-build` does everything
+except the 10-minute build.
+
+`colima stop` shuts the VM down; `faceage run` restarts it automatically when needed.
+
+### What is not in this repo, and why
+
+| Item | Why it isn't tracked | How you get it on a new machine |
+|---|---|---|
+| **Model weights** (92 MB) | Redistributable only from the authors' release, and too large for git | `install.sh` downloads and hash-verifies it automatically |
+| **Validation images** (`validation/images/`) | Other people's faces; the authors never published the curated set to Zenodo | **Manual** — see section 4 |
+| **Your photos and results** | Biometric data, deliberately kept outside git | Stay in `~/FaceAgeData/` on each machine, per-machine |
+
+Only the validation images need a manual step, and only if you want to re-prove
+environment fidelity on the new machine — `faceage validate` exits with
+"no validation images" without them. Scoring does not need them.
+
+The authors' reference CSV (`validation/reference/utk_hi-res_qa_res.csv`, 2,547
+rows) *is* tracked, so all you need to supply is the matching images.
+
+### Doing it by hand
+
+If you would rather not run the installer, it is equivalent to:
 
 ```bash
 # 1. Container runtime (no admin password, no Docker Desktop licence)
@@ -259,7 +313,7 @@ brew install colima docker
 colima start --vm-type=vz --vz-rosetta --cpu 4 --memory 8 --disk 60
 
 # 2. This repo
-git clone <this repo> ~/Documents/GitHub/FaceAge
+git clone https://github.com/geoffbrown/FaceAge.git ~/Documents/GitHub/FaceAge
 cd ~/Documents/GitHub/FaceAge
 
 # 3. Model weights (92 MB, not in git)
@@ -272,12 +326,15 @@ shasum -a 256 models/faceage_model.h5
 # 4. Build the image (~10 min under emulation)
 ./tools/faceage build
 
-# 5. Confirm
-./tools/faceage doctor
-./tools/faceage validate
-```
+# 5. Put `faceage` on PATH (skip if you always call ./tools/faceage)
+echo 'export FACEAGE_REPO="$HOME/Documents/GitHub/FaceAge"' >> ~/.zshrc
+echo 'export PATH="$FACEAGE_REPO/tools:$PATH"'              >> ~/.zshrc
+source ~/.zshrc
 
-`colima stop` shuts the VM down; `faceage run` restarts it automatically when needed.
+# 6. Confirm
+faceage doctor
+faceage validate    # needs validation/images/ — see section 4
+```
 
 ---
 
