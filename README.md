@@ -86,13 +86,34 @@ source ~/.zshrc
 
 ## 2. Where things live
 
-| What | Path |
+Data is kept **per subject**, so scoring someone else never touches your series.
+Your own subject is `me`; everything below is under `~/FaceAgeData/subjects/<subject>/`.
+
+| What | Path (relative to `~/FaceAgeData/subjects/me/`) |
 |---|---|
-| Photos, by session | `~/FaceAgeData/sessions/YYYY-MM-DD/` |
-| Per-image results | `~/FaceAgeData/results/YYYY-MM-DD_per_image.csv` |
-| Session summary | `~/FaceAgeData/results/YYYY-MM-DD_summary.json` |
-| **Longitudinal series** | `~/FaceAgeData/results/faceage_history.csv` |
-| Tracker dashboard | `~/FaceAgeData/results/tracker.html` (built by `faceage chart`) |
+| Photos, by session | `sessions/YYYY-MM-DD/` |
+| Per-image results | `results/YYYY-MM-DD_per_image.csv` |
+| Session summary | `results/YYYY-MM-DD_summary.json` |
+| **Longitudinal series** | `results/faceage_history.csv` |
+| Tracker dashboard | `results/tracker.html` (built by `faceage chart`) |
+
+### Scoring someone else
+
+```bash
+faceage run --subject jackie ~/Desktop/jackie/*.jpg   # her own series
+faceage chart --subject jackie                        # her own tracker
+faceage subjects                                      # who has data here
+faceage run --no-log ~/Desktop/oneoff.jpg             # score, log nothing
+```
+
+Each subject gets an independent `sessions/`, `results/`, history CSV and tracker;
+the tracker page is badged with the subject name so two dashboards can't be confused.
+`--no-log` scores and writes the per-image CSV but appends to no series — use it for
+one-off curiosity runs.
+
+Other people's photographs are their biometric data. They are gitignored like yours,
+but get the person's agreement before scoring them, and delete
+`~/FaceAgeData/subjects/<name>/` when you're done.
 | Model weights (92 MB) | `models/faceage_model.h5` (gitignored) |
 | Code | this repo |
 

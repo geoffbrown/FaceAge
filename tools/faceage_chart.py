@@ -7,7 +7,9 @@ leaves this machine. Contains summary statistics only; no photographs.
 """
 import csv, os, sys, math, html, datetime
 
-RESULTS = os.path.expanduser(os.environ.get('FACEAGE_RESULTS', '~/FaceAgeData/results'))
+SUBJECT = os.environ.get('FACEAGE_SUBJECT_LABEL', 'me')
+RESULTS = os.path.expanduser(os.environ.get(
+    'FACEAGE_RESULTS', '~/FaceAgeData/subjects/%s/results' % SUBJECT))
 HISTORY = os.path.join(RESULTS, 'faceage_history.csv')
 OUT     = os.path.join(RESULTS, 'tracker.html')
 
@@ -205,7 +207,7 @@ def main():
     page = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FaceAge tracker</title>
+<title>FaceAge tracker — __SUBJ__</title>
 <style>
 :root{color-scheme:light dark}
 .viz-root{
@@ -226,6 +228,9 @@ body{margin:0;background:var(--surface-1);
 .viz-root{background:var(--surface-1);color:var(--text-primary);
   max-width:840px;margin:0 auto;padding:32px 20px 56px}
 h1{font-size:20px;margin:0 0 2px;letter-spacing:-.01em}
+.subj{display:inline-block;vertical-align:2px;margin-left:6px;padding:2px 8px;border-radius:99px;
+  background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;
+  color:var(--text-secondary);letter-spacing:.02em}
 .sub{color:var(--text-secondary);margin:0 0 24px;font-size:13px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:24px}
 .tile{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
@@ -260,7 +265,7 @@ ul.notes li{margin-bottom:7px}
   font-size:12px;white-space:nowrap;z-index:9;font-variant-numeric:tabular-nums}
 </style></head>
 <body><div class="viz-root">
-<h1>FaceAge tracker</h1>
+<h1>FaceAge tracker <span class="subj">__SUBJ__</span></h1>
 <p class="sub">Local summary statistics only — no photographs. Generated __GEN__.</p>
 <div class="tiles">__TILES__</div>
 
@@ -308,7 +313,8 @@ document.querySelectorAll('.hit').forEach(function(el){
                                                    'before exposure tracking was added.'))
                 .replace('__TOL__', '%.0f' % LUMA_TOL)
                 .replace('__ROWS__', trows)
-                .replace('__NOTES__', note_html))
+                .replace('__NOTES__', note_html)
+                .replace('__SUBJ__', html.escape(SUBJECT)))
 
     with open(OUT, 'w') as fh:
         fh.write(page)
