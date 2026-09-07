@@ -66,6 +66,7 @@ alone could manufacture a multi-year "improvement" that is purely photographic. 
 Other commands:
 
 ```bash
+faceage chart        # build + open the visual tracker dashboard
 faceage history      # print the longitudinal series
 faceage doctor       # check VM, image, weights hash, session count
 faceage validate     # re-run validation against the authors' published CSV
@@ -91,6 +92,7 @@ source ~/.zshrc
 | Per-image results | `~/FaceAgeData/results/YYYY-MM-DD_per_image.csv` |
 | Session summary | `~/FaceAgeData/results/YYYY-MM-DD_summary.json` |
 | **Longitudinal series** | `~/FaceAgeData/results/faceage_history.csv` |
+| Tracker dashboard | `~/FaceAgeData/results/tracker.html` (built by `faceage chart`) |
 | Model weights (92 MB) | `models/faceage_model.h5` (gitignored) |
 | Code | this repo |
 

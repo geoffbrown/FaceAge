@@ -136,6 +136,13 @@ cmd_history() {
   column -s, -t < "$HISTORY"
 }
 
+cmd_chart() {
+  local out
+  out=$(python3 "$REPO/tools/faceage_chart.py") || die "could not build the tracker"
+  info "Tracker written to: $out"
+  command -v open >/dev/null && open "$out"
+}
+
 cmd_doctor() {
   printf 'host arch        : %s\n' "$(uname -m)"
   printf 'colima           : %s\n' "$(command -v colima >/dev/null && colima status 2>&1 | head -1 || echo 'NOT INSTALLED')"
@@ -157,6 +164,7 @@ case "${1:-}" in
   run)      shift; cmd_run "$@" ;;
   validate) shift; cmd_validate "$@" ;;
   history)  cmd_history ;;
+  chart)    cmd_chart ;;
   build)    cmd_build ;;
   doctor)   cmd_doctor ;;
   *) cat <<USAGE
@@ -168,6 +176,7 @@ FaceAge — local monthly scoring pipeline
   faceage run FILE...        stage those photos into today's session and score
   faceage validate [tol]     re-run validation against the authors' CSV
   faceage history            print the longitudinal series
+  faceage chart              build + open the visual tracker dashboard
   faceage build              (re)build the linux/amd64 container image
   faceage doctor             check environment, weights hash, session count
 
