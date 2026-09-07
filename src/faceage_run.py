@@ -361,7 +361,7 @@ def summarise(records, args):
 
 def append_history(history_path, row):
     cols = ['session_date', 'run_timestamp', 'n', 'n_total_images', 'n_failed',
-            'n_flagged', 'mean', 'median', 'std', 'min', 'max',
+            'n_flagged', 'mean', 'median', 'std', 'min', 'max', 'mean_luma',
             'model_sha256', 'image_dir', 'notes']
     if os.path.exists(history_path):
         hist = pd.read_csv(history_path)
