@@ -790,6 +790,134 @@ class TestScoredSessionIsClosed(WebTestCase):
         self.assertFalse(self.w.read_checklist('me', '2026-09-12')['valid'])
 
 
+JPEG_STUB = b'\xff\xd8\xff\xe0' + b'\x00' * 64 + b'\xff\xd9'
+
+
+def data_url(raw=JPEG_STUB, mime='image/jpeg'):
+    import base64
+    return 'data:%s;base64,%s' % (mime, base64.b64encode(raw).decode('ascii'))
+
+
+class TestCapture(WebTestCase):
+    """The Mac's camera is an option beside import. The browser grabs the
+    frame; this end only writes bytes into the session folder, one frame per
+    request, and records how they were taken. Nothing here reaches the
+    tracker."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def frame(self, i, date='2026-09-13', batch='20260913-101500', **extra):
+        body = {'person': 'me', 'date': date, 'batch': batch, 'index': i,
+                'image': data_url(),
+                'settings': {'camera': 'FaceTime HD', 'width': 1920,
+                             'height': 1080, 'luma': 118.4}}
+        body.update(extra)
+        return self.w.do_capture(body)
+
+    def test_frame_lands_in_the_session_folder_unchanged(self):
+        r = self.frame(1)
+        self.assertEqual(r['file'], 'cam_20260913-101500_01.jpg')
+        p = os.path.join(self.w.session_dir('me', '2026-09-13'), r['file'])
+        with open(p, 'rb') as fh:
+            self.assertEqual(fh.read(), JPEG_STUB)
+        self.assertEqual(self.w.staged('me', '2026-09-13'), [r['file']])
+
+    def test_ten_frames_stage_ten_photos_in_order(self):
+        for i in range(1, 11):
+            r = self.frame(i)
+        self.assertEqual(len(r['staged']), 10)
+        self.assertEqual(r['staged'][0], 'cam_20260913-101500_01.jpg')
+        self.assertEqual(r['staged'][-1], 'cam_20260913-101500_10.jpg')
+
+    def test_manifest_records_source_and_settings(self):
+        self.frame(1); self.frame(2)
+        m = self.w.capture_manifest('me', '2026-09-13')
+        self.assertEqual(m['source'], 'mac-camera')
+        self.assertEqual(m['settings']['camera'], 'FaceTime HD')
+        self.assertEqual([f['index'] for f in m['frames']], [1, 2])
+        self.assertEqual(m['frames'][0]['luma'], 118.4)
+        self.assertEqual(self.w.session_source('me', '2026-09-13'), 'mac-camera')
+
+    def test_manifest_is_not_a_photo(self):
+        self.frame(1)
+        self.assertNotIn('capture.json', self.w.staged('me', '2026-09-13'))
+
+    def test_imported_session_has_no_manifest(self):
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13', 'files': ['IMG_1.jpg']})
+        self.assertIsNone(self.w.capture_manifest('me', '2026-09-13'))
+        self.assertEqual(self.w.session_source('me', '2026-09-13'), 'import')
+        self.assertIsNone(self.w.session_source('me', '2026-09-14'))
+
+    def test_scored_session_opens_the_next_take(self):
+        self.history('me', '2026-09-13')
+        r = self.frame(1)
+        self.assertEqual(r['session'], '2026-09-13b')
+        self.assertEqual(r['moved_to_new_take'], '2026-09-13b')
+        self.assertTrue(os.path.exists(os.path.join(
+            self.w.session_dir('me', '2026-09-13b'), r['file'])))
+
+    def test_no_overwrite(self):
+        self.frame(1)
+        with self.assertRaises(ValueError):
+            self.frame(1)
+
+    def test_rejects_non_jpeg(self):
+        with self.assertRaises(ValueError):
+            self.frame(1, image=data_url(b'\x89PNG\r\n' + b'\x00' * 20, 'image/png'))
+        with self.assertRaises(ValueError):
+            self.frame(1, image=data_url(b'not a jpeg at all'))
+        with self.assertRaises(ValueError):
+            self.frame(1, image='data:image/jpeg;base64,***not base64***')
+        self.assertEqual(self.w.staged('me', '2026-09-13'), [])
+
+    def test_rejects_bad_batch_or_index(self):
+        for bad in ({'batch': '../x'}, {'batch': '2026-09-13'}, {'index': 0},
+                    {'index': 100}, {'index': 'one'}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                self.frame(1, **bad)
+
+    def test_rejects_oversized_frame(self):
+        self.w.MAX_CAPTURE_BYTES = 128
+        with self.assertRaises(ValueError):
+            self.frame(1, image=data_url(b'\xff\xd8\xff' + b'\x00' * 200))
+
+    def test_capture_never_writes_history(self):
+        for i in range(1, 4):
+            self.frame(i)
+        self.assertFalse(os.path.exists(os.path.join(
+            self.w.results_dir('me'), 'faceage_history.csv')))
+        self.assertFalse(self.w.session_scored('me', '2026-09-13'))
+
+    def test_series_source_follows_the_latest_logged_session(self):
+        self.assertIsNone(self.w.series_source('me'))
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-10', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-10')
+        self.assertEqual(self.w.series_source('me'), 'import')
+        self.frame(1, date='2026-09-13')
+        self.history('me', '2026-09-13')
+        self.assertEqual(self.w.series_source('me'), 'mac-camera')
+
+    def test_state_exposes_sources(self):
+        self.frame(1)
+        st = self.w.state('me', '2026-09-13')
+        self.assertEqual(st['source'], 'mac-camera')
+        self.assertEqual(st['capture']['source'], 'mac-camera')
+        self.assertIsNone(st['series_source'])
+
+    def test_discard_takes_the_manifest_with_it(self):
+        self.frame(1)
+        self.w.do_discard({'person': 'me', 'date': '2026-09-13', 'reason': 'test'})
+        self.assertIsNone(self.w.capture_manifest('me', '2026-09-13'))
+        self.assertEqual(self.w.staged('me', '2026-09-13'), [])
+
+    def test_route_is_registered(self):
+        self.assertIs(self.w.ROUTES_POST['/api/capture'], self.w.do_capture)
+
+
 class TestDiscard(WebTestCase):
     """Deleting the photos left every other trace behind, because the summary,
     QA, checklist, validity row and history row key off the label rather than

@@ -18,20 +18,30 @@ monthly is what realistically happens. That gap is the whole product.
 
 ## What the app is not
 
-**It is not the camera.**
+**It is not a second camera.** *(revised 2026-09-12)*
 
-Capture stays on the phone, on a tripod, per `Younger 2027 — FaceAge Improvement Pro.md`
-§3: same phone, **rear main camera — never ultrawide**, since wide-angle barrel distortion
-alters apparent midface geometry. A Mac webcam is a worse instrument, and this repo's own
-README measured a webcam-vs-phone gap of **2.2 years** on photos taken ten minutes apart.
+The first draft of this section said "it is not the camera": capture stays on the phone,
+because this repo's README measured a webcam-vs-phone gap of **2.2 years** on photos taken
+ten minutes apart. That number is still true, and it is still the reason the rule exists.
+But it is a gap *between* two instruments, not noise *within* one. The series is a relative
+trend line (`docs/PREREGISTRATION.md` §7): any camera that is fixed in place and never
+changed contributes a constant offset, and a constant offset cannot move a slope.
 
-An earlier draft of this spec had the app driving the Mac's camera with an AVFoundation
-exposure lock and a live framing overlay. That is discarded. It would have produced a
-worse number with more confidence attached to it.
+So the web app now offers the Mac's built-in camera as an **option beside import**, with a
+live framing overlay (face oval at 85% of frame height, eye line, centre line), a
+brightness readout against the person's baseline, and an automated countdown-and-ten-shot
+capture that writes full-size, unmirrored JPEGs straight into the session folder together
+with a `capture.json` recording the camera, resolution and per-frame brightness. A Mac on a
+desk is easier to keep fixed than a propped phone, and it removes the AirDrop step.
+
+The rule that survives is **one camera for the whole series, never switched**. The app
+records which camera produced each session and warns before a session from a different
+camera is added to a tracker built from the other. Cross-person comparison stays out of
+scope for the same reason it always was.
 
 ## Scope
 
-**Import → QA → score → chart.**
+**Capture or import → QA → score → chart.**
 
 1. **Import** a session's photos from the phone (AirDrop, Photos, Image Capture, or a
    watched folder).
