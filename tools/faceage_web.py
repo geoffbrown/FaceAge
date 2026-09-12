@@ -696,12 +696,56 @@ def do_capture(body):
             'moved_to_new_take': moved_to, 'staged': staged(name, date)}
 
 
+# Exceptions, not a form. Camera, light and framing are measured by the
+# capture; the rest only the person knows, and the honest default is that
+# nothing is different. Each flag fails the condition it belongs to.
+FLAG_KEY = {'shave': 'grooming', 'makeup': 'grooming', 'light': 'light',
+            'skin': 'skin', 'alcohol': 'photoday', 'sleep': 'photoday',
+            'shower': 'photoday', 'camera': 'camera', 'other': None}
+FLAG_LABEL = {'shave': 'did not shave', 'makeup': 'makeup or product',
+              'light': 'different light', 'skin': 'skin flare or blemish',
+              'alcohol': 'drank last night', 'sleep': 'poor sleep',
+              'shower': 'just showered or trained', 'camera': 'moved the Mac',
+              'other': 'something else'}
+
+
+def answers_from_flags(name, flags, note, source, notes):
+    answers = {k: True for k, _ in CHECKLIST}
+    said = []
+    for f in flags:
+        if f not in FLAG_KEY:
+            raise ValueError('unknown flag: %s' % f)
+        key = FLAG_KEY[f]
+        if key:
+            answers[key] = False
+        said.append(FLAG_LABEL[f] + ((': ' + note.strip()) if f == 'other' and note.strip() else ''))
+    # "something else" is a failure with no fixed condition: record it against
+    # the photo-day controls, which is where free-text reasons belong.
+    if 'other' in flags:
+        answers['photoday'] = False
+    # a different camera from the series is a measured failure, once the study
+    # has started (before the start line the earlier sessions are rehearsals)
+    prev = series_source(name)
+    if source and prev and prev != source and fa_anchors(name).get('B'):
+        answers['camera'] = False
+        said.append('different camera from the rest of the tracker')
+    text = '; '.join(said)
+    if notes:
+        text = (text + '; ' if text else '') + notes
+    return answers, text
+
+
 def do_checklist(body):
     """Record the §1 validity answers. Written BEFORE scoring, always."""
     name = safe_subject(body.get('person'))
     date = safe_date(body.get('date'))
-    answers = body.get('answers') or {}
     notes = (body.get('notes') or '').strip()
+    flags = body.get('flags')
+    if isinstance(flags, list):
+        answers, notes = answers_from_flags(name, flags, body.get('note') or '',
+                                            body.get('source') or None, notes)
+    else:
+        answers = body.get('answers') or {}
 
     if session_scored(name, date):
         raise ValueError(
@@ -715,10 +759,13 @@ def do_checklist(body):
     prior = read_checklist(name, date)
 
     failed = [label for key, label in CHECKLIST if not answers.get(key)]
+    if isinstance(flags, list) and notes:
+        failed = [t.strip() for t in notes.split(';') if t.strip()] or failed
     doc = {'session_date': date, 'person': name,
            'recorded_at': datetime.datetime.now().replace(microsecond=0).isoformat(),
            'answers': {k: bool(answers.get(k)) for k, _ in CHECKLIST},
            'failed': failed, 'notes': notes,
+           'flags': list(flags) if isinstance(flags, list) else None,
            'valid': not failed}
     if prior:
         doc['superseded'] = (prior.get('superseded') or []) + [
@@ -1277,10 +1324,34 @@ html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);
   font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,"Segoe UI",Helvetica,Arial,sans-serif;
   -webkit-font-smoothing:antialiased}
-.wrap{max-width:640px;margin:0 auto;padding:36px 20px 80px}
+.wrap{max-width:640px;margin:0 auto;padding:36px 20px 80px;transition:max-width .25s ease}
+.wrap.wide{max-width:900px}
 
 /* header */
-.top{display:flex;align-items:center;gap:12px;margin-bottom:28px;flex-wrap:wrap}
+.top{display:flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap}
+.tabs{display:flex;gap:2px;padding:3px;border-radius:12px;background:var(--line)}
+.tabs button{padding:7px 14px;border:0;border-radius:9px;background:transparent;color:var(--ink2);font-weight:600;font-size:14px}
+.tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.tabs button:hover:not(.on){background:transparent;color:var(--ink)}
+.sessbar{display:flex;align-items:center;gap:10px;margin:0 0 14px;flex-wrap:wrap}
+.steps{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--ink3);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.steps span{display:flex;align-items:center;gap:6px}
+.steps span::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--line)}
+.steps span.done::before{background:var(--good)}
+.steps span.now{color:var(--ink)} .steps span.now::before{background:var(--accent)}
+.steps em{font-style:normal;color:var(--line);margin:0 2px}
+.flags{margin:14px 0 4px}
+.flags .q{font-size:14px;font-weight:600;margin-bottom:8px}
+.flags .q small{font-weight:500;color:var(--ink3);margin-left:6px}
+.flagrow{display:flex;flex-wrap:wrap;gap:6px}
+.flag{padding:7px 12px;border-radius:99px;font-size:13px;font-weight:500;border:1px solid var(--line);background:var(--card);color:var(--ink2)}
+.flag.on{background:var(--warn-bg);border-color:var(--warn);color:var(--warn);font-weight:600}
+.banner{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:12px;background:var(--good-bg);margin-bottom:16px;font-size:14px;line-height:1.5}
+.banner b{display:block;margin-bottom:2px}
+.trk{width:100%;border:0;border-radius:16px;background:var(--card);min-height:70vh;display:block}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);padding:12px 18px;border-radius:12px;background:var(--ink);color:var(--card);
+  font-weight:600;font-size:14px;box-shadow:var(--shadow);z-index:20}
+.toast[hidden]{display:none}
 .brand{font-weight:700;font-size:18px;letter-spacing:-.01em;margin-right:auto}
 .chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:99px;
   background:var(--card);border:1px solid var(--line);font-size:13px;color:var(--ink2)}
@@ -1289,16 +1360,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .chip button:hover{text-decoration:underline}
 
 /* step rail */
-.rail{display:flex;gap:6px;margin:0 0 22px;padding:0;list-style:none}
-.rail li{flex:1;display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--ink3);
-  text-transform:uppercase;letter-spacing:.06em;font-weight:600}
-.rail li i{display:block;height:4px;border-radius:99px;background:var(--line)}
-.rail li.done i{background:var(--good)}
-.rail li.now{color:var(--ink)}
-.rail li.now i{background:var(--accent)}
-@media (max-width:480px){.rail li span{display:none}}
 
-/* completed steps, compact */
 .donerow{display:flex;align-items:center;gap:10px;padding:12px 16px;margin-bottom:10px;
   background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
   font-size:14px;color:var(--ink2)}
@@ -1476,20 +1538,36 @@ details.notes .note{margin-top:8px}
 </style></head><body><div class="wrap">
 <div class="top">
   <div class="brand">FaceAge</div>
+  <nav class="tabs" id="tabs"></nav>
+  <span class="sp"></span>
   <div id="who"></div>
-  <div id="sess"></div>
 </div>
-<ul class="rail" id="rail"></ul>
 <div id="app"></div>
+<div id="toast" class="toast" hidden></div>
 <p class="foot" id="foot"></p>
 </div>
 <script src="/static/pico.js"></script>
 <script>
 'use strict';
 var S = null, sel = {}, ui = {browseDir:null, prefill:null, note:null, logOpen:false,
-                             photoMode:'camera', camError:null};
+                             photoMode:'camera', camError:null, tab:'capture', choosing:false,
+                             flags:{}, flagNote:''};
+try { var lp = localStorage.getItem('faceage.person'); if(lp) ui.person = lp; } catch(e){}
 
-var STEPS = ['Who','Conditions','Photos','Analyse','Result'];
+/* What might be different today. Anything tapped keeps the session out of the
+   trend line (it is still scored, still addable). Camera, light and framing are
+   measured by the capture itself and never asked. */
+var FLAGS = [
+  ['shave',   'Did not shave'],
+  ['makeup',  'Makeup or product'],
+  ['light',   'Different light'],
+  ['skin',    'Skin flare or blemish'],
+  ['alcohol', 'Drank last night'],
+  ['sleep',   'Poor sleep'],
+  ['shower',  'Just showered or trained'],
+  ['camera',  'Moved the Mac'],
+  ['other',   'Something else']
+];
 
 function h(x){return String(x==null?'':x).replace(/[&<>"']/g,
   function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -1504,10 +1582,12 @@ function api(path, body){
 }
 
 function load(){
-  var qs = '?person='+encodeURIComponent(S&&S.person||'')+
+  var qs = '?person='+encodeURIComponent((S&&S.person)||ui.person||'')+
            '&date='+encodeURIComponent(S&&S.date||'')+
            '&browse='+encodeURIComponent(ui.browseDir||'');
-  return api('/api/state'+qs).then(function(j){ S = j; render(); })
+  return api('/api/state'+qs).then(function(j){ S = j;
+      try { if(S.person) localStorage.setItem('faceage.person', S.person); } catch(e){}
+      render(); })
     .catch(function(e){
       document.getElementById('app').innerHTML =
         '<div class="card"><h2>Could not load</h2><div class="err">'+h(e.message)+
@@ -1537,49 +1617,74 @@ function niceDate(label){
 
 /* ---- which step are we on? derived from disk state, nothing remembered ---- */
 function stepOf(){
-  if(!S.person) return 0;
+  if(!S.person || ui.choosing) return 0;
   if(S.result || (S.job && S.job.running)) return 4;
-  if(!S.checklist) return 1;
   if(!S.staged.length || ui.forcePhotos) return 2;
   return 3;
+}
+function stepsHtml(step){
+  var names = ['Capture','Analyse','Result'], idx = step<=2 ? 0 : (step===3 ? 1 : 2);
+  if(step===4 && S.job && S.job.running) idx = 1;
+  return '<div class="steps">'+names.map(function(n,i){
+    return '<span class="'+(i<idx?'done':(i===idx?'now':''))+'">'+n+'</span>'+(i<2?'<em>›</em>':'');
+  }).join('')+'</div>';
 }
 
 /* ---- render ---------------------------------------------------------------- */
 function render(){
   var step = stepOf();
-  if(!(step===2 && ui.photoMode==='camera')) camStop();
+  if(!(ui.tab==='capture' && step===2 && ui.photoMode==='camera')) camStop();
   document.getElementById('foot').innerHTML =
     'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>';
-
-  // header chips
+  var wrap = document.querySelector('.wrap'); if(wrap) wrap.className = 'wrap' + (ui.tab==='progress' && S.person ? ' wide' : '');
+  document.getElementById('tabs').innerHTML = S.person
+    ? '<button class="'+(ui.tab==='capture'?'on':'')+'" onclick="setTab(\'capture\')">New session</button>'+
+      '<button class="'+(ui.tab==='progress'?'on':'')+'" onclick="setTab(\'progress\')">Progress</button>' : '';
   document.getElementById('who').innerHTML = S.person
     ? '<span class="chip"><b>'+h(S.person)+'</b><button onclick="renamePerson()">rename</button>'+
       '<button onclick="changePerson()">change</button></span>' : '';
-  document.getElementById('sess').innerHTML = S.person
-    ? '<span class="chip">'+h(niceDate(S.date))+
-      ((S.staged.length||S.checklist||S.result)?'<button onclick="discard()">start over</button>':'')+
-      '</span>' : '';
-
-  // rail
-  document.getElementById('rail').innerHTML = STEPS.map(function(n,i){
-    return '<li class="'+(i<step?'done':(i===step?'now':''))+'"><i></i><span>'+n+'</span></li>';
-  }).join('');
 
   var o = [];
-  if(step > 1 && S.checklist)
-    o.push(doneRow('Conditions', S.checklist.valid ? 'all good' : 'problem noted',
-                   step < 4 ? 'redoConditions()' : null));
-  if(step > 2 && S.staged.length)
-    o.push(doneRow('Photos', S.staged.length+' selected', step < 4 ? 'morePhotos()' : null));
-
-  if(step===0) o.push(cardWho());
-  else if(step===1) o.push(cardConditions());
-  else if(step===2) o.push(cardPhotos());
-  else if(step===3) o.push(cardAnalyse());
-  else o.push(cardResult());
-
+  if(ui.tab==='progress' && S.person){
+    o.push(cardProgressTab());
+  } else {
+    if(step > 0){
+      o.push('<div class="sessbar">'+stepsHtml(step)+'<span class="sp"></span>'+
+             '<span class="chip">'+h(niceDate(S.date))+
+             ((S.staged.length||S.result)?'<button onclick="discard()">start over</button>':'')+'</span></div>');
+    }
+    if(step > 2 && S.staged.length && !(S.result || (S.job && S.job.running)))
+      o.push(doneRow('Photos', S.staged.length+' in this session', 'morePhotos()'));
+    if(step===0) o.push(cardWho());
+    else if(step===2) o.push(cardPhotos());
+    else if(step===3) o.push(cardAnalyse());
+    else o.push(cardResult());
+  }
   document.getElementById('app').innerHTML = o.join('');
   wire();
+}
+
+function setTab(t){ ui.tab = t; render(); }
+function cardProgressTab(){
+  var logged = personInfo().logged;
+  if(!logged)
+    return '<div class="card"><h2>Nothing to show yet</h2><p class="lead">Your progress page appears after the first session is added to the tracker.</p>'+
+           '<div class="cta"><button class="primary" onclick="setTab(\'capture\')">Take the first session</button></div></div>';
+  return '<iframe class="trk" id="trk" title="Progress" src="/tracker?person='+encodeURIComponent(S.person)+'&embed=1&t='+Date.now()+'"></iframe>';
+}
+function personInfo(){
+  for(var i=0;i<S.people.length;i++) if(S.people[i].name===S.person) return S.people[i];
+  return {logged:0, sessions:0};
+}
+function toast(msg){
+  var t = document.getElementById('toast'); if(!t) return;
+  t.textContent = msg; t.hidden = false; setTimeout(function(){ t.hidden = true; }, 2600);
+}
+if(typeof window !== 'undefined' && window.addEventListener){
+  window.addEventListener('message', function(e){
+    var d = e.data || {};
+    if(d.faceage === 'height'){ var f = document.getElementById('trk'); if(f){ f.style.minHeight = '0'; f.style.height = (d.h + 4) + 'px'; } }
+  });
 }
 
 function doneRow(label, value, change){
@@ -1623,43 +1728,29 @@ function guideHtml(open){
   return o.join('');
 }
 
-/* ---- 2 · conditions -------------------------------------------------------- */
-var TIPS = {
-  grooming:'Same as your very first session, whatever that was.',
-  light:'Same lamp, same spot, blinds closed. Not the ceiling light.',
-  camera:'The same phone propped in the same spot, or this Mac in the same spot. Never a different camera, never hand-held.',
-  pose:'Look straight ahead, relaxed face, mouth closed.',
-  photoday:'No alcohol for two days, decent sleep, not straight after a shower or a workout.',
-  skin:'No sunburn, breakout, or allergy flare on the forehead or cheeks.'
-};
-function cardConditions(){
-  var pre = ui.prefill || {};
-  var o = ['<div class="card"><h2>Same setup as last time?</h2>',
-           '<p class="lead">Tick each one that is true right now. Lighting changes alone can move the result by years, so this matters more than it looks.</p>'];
-  S.checklist_items.forEach(function(it){
-    o.push('<div class="cond"><input type="checkbox" class="cl" id="c_'+h(it.key)+'" value="'+h(it.key)+'"'+
-           (pre[it.key]?' checked':'')+'><label for="c_'+h(it.key)+'">'+h(it.label)+
-           (TIPS[it.key]?'<small>'+h(TIPS[it.key])+'</small>':'')+'</label></div>');});
-  o.push(guideHtml(!S.prev_checklist));
-  o.push('<div class="actions">');
-  if(S.prev_checklist)
-    o.push('<button class="quiet" onclick="sameAsLast()">Same as '+h(niceDate(S.prev_checklist.session_date))+'</button>');
-  o.push('<span class="sp"></span>');
-  o.push('<button class="primary" onclick="saveConditions()">Continue</button></div>');
-  o.push('<p class="hint">Leave anything unticked and this session will still be scored, but it will be kept out of your trend line.</p>');
-  o.push('</div>');
-  return o.join('');
-}
-
 /* ---- 3 · photos ------------------------------------------------------------ */
 
+function flagsHtml(){
+  var o = ['<div class="flags"><div class="q">Anything different today?<small>Tap what applies. Leave it if nothing is.</small></div><div class="flagrow">'];
+  FLAGS.forEach(function(f){
+    o.push('<button class="flag'+(ui.flags[f[0]]?' on':'')+'" data-flag="'+f[0]+'">'+h(f[1])+
+           (f[0]==='other' && ui.flags.other && ui.flagNote ? ': '+h(ui.flagNote) : '')+'</button>');
+  });
+  o.push('</div></div>');
+  return o.join('');
+}
+function baselineBanner(){
+  if(personInfo().logged) return '';
+  return '<div class="banner"><span>★</span><div><b>This is your baseline.</b>Every session after this is compared to today. '+
+         'Put the Mac and the lamp where you can keep them, then shoot.</div></div>';
+}
 function cardPhotos(){
   if(ui.photoMode==='camera') return cardCamera();
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
   var o = ['<div class="card"><h2>Import photos from your phone</h2>',
            '<p class="lead">Ten or so from one sitting, all from the same spot. AirDrop lands them in Downloads. '+
            '<button class="quiet inline" onclick="setMode(\'camera\')">Use this Mac’s camera instead</button></p>',
-           guideHtml(false)];
+           baselineBanner(), guideHtml(false)];
   o.push('<div class="pathbar"><button onclick="goUp()"'+(B.parent?'':' disabled')+' title="up">↑</button>'+
          '<input type="text" id="path" value="'+h(B.path)+'"><button onclick="goPath()">Go</button>'+
          '<button onclick="goHome()">Downloads</button></div>');
@@ -1677,6 +1768,7 @@ function cardPhotos(){
              '<span class="nm">'+h(f.file)+'</span>'+(f.heic?'<span class="tag">HEIC</span>':'')+
              '<span class="when">'+h(f.when)+'</span></li>');});
     o.push('</ul>');
+    o.push(flagsHtml());
     o.push('<div class="actions"><button class="quiet" onclick="pickRecent()">Newest 10</button>'+
            '<button class="quiet" onclick="pickAll()">All '+B.images.length+'</button>'+
            '<button class="quiet" onclick="pickNone()">None</button><span class="sp"></span>'+
@@ -1738,7 +1830,8 @@ function baselineLine(){
 
 function cardCamera(){
   var o = ['<div class="card"><h2>Take the photos</h2>',
-           '<p class="lead">Sit where you always sit and fill the oval. The frame turns green when you are lined up, then the app counts down and takes '+SHOTS+' photos, each one only while you are in position.</p>'];
+           '<p class="lead">Sit where you always sit and fill the oval. The frame turns green when you are lined up, then the app counts down, takes '+SHOTS+' photos while you are in position, and analyses them.</p>',
+           baselineBanner()];
   if(S.series_source && S.series_source!=='mac-camera'){
     o.push('<div class="note">Your tracker so far is built from phone photos, which cannot be compared with this camera. '+
            (S.has_b ? 'If you switch, switch for good and treat the first Mac session as your new starting point.'
@@ -1762,6 +1855,7 @@ function cardCamera(){
          '<button class="primary big" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
          (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button></div>');
   o.push('<div class="camstats"><span id="camlight"></span><span id="camfill"></span><span id="camres"></span></div>');
+  o.push(flagsHtml());
   o.push('<p class="hint" id="cambase">'+baselineLine()+'</p>');
   o.push('<div class="camopts"><label><input type="checkbox" id="camauto"'+(CAM.armed?' checked':'')+'> Start automatically when lined up</label>'+
          '<label><input type="checkbox" id="camsound"'+(CAM.muted?'':' checked')+'> Sound</label></div>');
@@ -1858,7 +1952,7 @@ function camStop(){
   if(CAM.raf && typeof cancelAnimationFrame === 'function'){ cancelAnimationFrame(CAM.raf); }
   CAM.raf = null;
   if(CAM.stream){ CAM.stream.getTracks().forEach(function(t){ t.stop(); }); }
-  CAM.stream = null; CAM.starting = false; CAM.running = false; CAM.luma = null; CAM.face = null;
+  CAM.stream = null; CAM.starting = false; CAM.running = false; CAM.luma = null; CAM.face = null; CAM.recorded = false;
   CAM.posOk = false; CAM.aligned = false;
 }
 
@@ -2014,6 +2108,12 @@ function stamp(){
 
 function startCapture(){
   if(!CAM.stream || CAM.running) return;
+  if(!CAM.recorded){
+    CAM.running = true;
+    recordConditions('mac-camera').then(function(){ CAM.recorded = true; CAM.running = false; startCapture(); })
+      .catch(function(e){ CAM.running = false; fail(e); });
+    return;
+  }
   CAM.running = true;
   var b = document.getElementById('camstart'); if(b){ b.disabled = true; b.textContent = 'Taking photos…'; }
   var batch = stamp(), saved = 0, n = COUNTDOWN, R = cropRect();
@@ -2025,7 +2125,9 @@ function startCapture(){
     CAM.running = false; camCount('');
     if(err){ fail(err); if(b){ b.disabled = false; b.textContent = 'Try again'; } return; }
     beep(SND.done); camSay('Done · '+saved+' saved');
-    load();                                        // lands on Analyse: staged count comes from disk
+    CAM.recorded = false;
+    if(saved >= SHOTS) analyse();                  // straight on: the number is what they came for
+    else load();
   }
   function abort(why){                             // lost the face during the countdown, or stuck
     CAM.running = false; camCount(''); beep(SND.lost);
@@ -2071,9 +2173,14 @@ function startCapture(){
 
 /* ---- 4 · analyse ----------------------------------------------------------- */
 function cardAnalyse(){
-  var o = ['<div class="card"><h2>Ready to analyse</h2>',
+  var j = S.job, failed = j && !j.running && j.rc !== null && j.rc !== undefined && j.rc !== 0;
+  var o = ['<div class="card"><h2>'+(failed ? 'The analysis did not finish' : 'Ready to analyse')+'</h2>'];
+  if(failed)
+    o.push('<div class="err">Last time it stopped with an error. Check that Docker (or Colima) is running, then try again.</div>'+
+           '<details'+(ui.logOpen?' open':'')+' id="logdet"><summary>Details</summary><pre class="log">'+h((j.log||[]).slice(-12).join('\n'))+'</pre></details>');
+  o.push(
            '<p class="lead"><b>'+S.staged.length+'</b> photo'+(S.staged.length===1?'':'s')+' in this session'+
-           (S.source==='mac-camera'?', taken with this Mac\u2019s camera':'')+'. This takes about half a minute. Nothing is saved to your tracker until you say so.</p>'];
+           (S.source==='mac-camera'?', taken with this Mac\u2019s camera':'')+'. This takes about half a minute. Nothing is saved to your tracker until you say so.</p>');
   o.push('<div class="actions"><button class="quiet" onclick="morePhotos()">Add more photos</button><span class="sp"></span>'+
          '<button class="primary" onclick="analyse()">Analyse</button></div></div>');
   return o.join('');
@@ -2123,8 +2230,8 @@ function conditionsNote(R){
   if(R.valid) return '';
   var items = (S.checklist && S.checklist.failed) || [];
   var shown = items.slice(0,2).map(function(t){ var cut = t.search(/\s*[\x28—]/); return cut > 0 ? t.slice(0, cut) : t; });   // \x28 is an opening bracket
-  return '<div class="note" title="'+h(items.join('; '))+'"><b>Conditions not confirmed</b>'+
-         (items.length ? ' · '+h(shown.join('; '))+(items.length>2 ? ' +'+(items.length-2)+' more' : '') : '')+
+  return '<div class="note" title="'+h(items.join('; '))+'"><b>You flagged</b>'+
+         (items.length ? ': '+h(shown.join('; '))+(items.length>2 ? ' +'+(items.length-2)+' more' : '') : '')+
          '. If you add this it shows on the chart but stays out of your trend line.</div>';
 }
 
@@ -2208,7 +2315,7 @@ function cardDone(R){
          (R.valid?'':' · kept out of the trend line because of the conditions you noted')+'</p></div>'+
          '<div class="cta">'+
          '<button class="primary" onclick="newSession()">Start a new session</button>'+
-         '<a href="/tracker?person='+encodeURIComponent(S.person)+'" target="_blank"><button>View tracker</button></a></div>'+
+         '<button onclick="setTab(\'progress\')">See your progress</button></div>'+
          '<div class="minor"><button class="quiet" onclick="reveal(\'session\')">Show photos in Finder</button>'+
          '<button class="quiet" onclick="removeFromTracker()">Remove it from the tracker</button></div></div>';
 }
@@ -2225,7 +2332,28 @@ function wire(){
   if(p) p.addEventListener('keydown', function(e){ if(e.key==='Enter') goPath(); });
   var nn = document.getElementById('newname');
   if(nn) nn.addEventListener('keydown', function(e){ if(e.key==='Enter') addPerson(); });
-  if(stepOf()===2 && ui.photoMode==='camera'){ camStart(); camAttach(); }
+  document.querySelectorAll('button.flag').forEach(function(b){
+    b.onclick = function(){
+      var k = b.getAttribute('data-flag');
+      if(k==='other' && !ui.flags.other){
+        var t = prompt('What is different today?', ui.flagNote || '');
+        if(t===null) return;
+        ui.flagNote = t.trim(); ui.flags.other = true;
+      } else ui.flags[k] = !ui.flags[k];
+      // patch in place: a re-render would restart the camera
+      document.querySelectorAll('button.flag').forEach(function(x){
+        var kk = x.getAttribute('data-flag'); x.className = 'flag'+(ui.flags[kk]?' on':'');
+        if(kk==='other') x.textContent = 'Something else'+(ui.flags.other && ui.flagNote ? ': '+ui.flagNote : '');
+      });
+    };
+  });
+  if(ui.tab==='capture' && stepOf()===2 && ui.photoMode==='camera'){ camStart(); camAttach(); }
+}
+function flagList(){ return Object.keys(ui.flags).filter(function(k){ return ui.flags[k]; }); }
+/* The record of what is different today, written before any photo is taken and
+   therefore before any number exists. */
+function recordConditions(source){
+  return api('/api/checklist', {person:S.person, date:S.date, flags:flagList(), note:ui.flagNote, source:source});
 }
 function refreshUseBtn(){
   var b = document.querySelector('.actions .primary');
@@ -2233,8 +2361,8 @@ function refreshUseBtn(){
 }
 
 /* ---- actions --------------------------------------------------------------- */
-function pickPerson(){ var s = document.getElementById('pick'); S.person = s.value; S.date = null; sel = {}; load(); }
-function changePerson(){ S.person = null; render(); }
+function pickPerson(){ var s = document.getElementById('pick'); S.person = s.value; S.date = null; sel = {}; ui.choosing = false; load(); }
+function changePerson(){ ui.choosing = true; ui.tab = 'capture'; render(); }
 function renamePerson(){
   var n = prompt('Rename '+S.person+' to:', S.person);
   if(!n || n.trim()===S.person) return;
@@ -2244,20 +2372,7 @@ function renamePerson(){
 function addPerson(){
   var n = (document.getElementById('newname').value||'').trim();
   if(!n) return;
-  api('/api/person', {name:n}).then(function(){ S.person = n; S.date = null; load(); }).catch(fail);
-}
-
-function sameAsLast(){ ui.prefill = (S.prev_checklist && S.prev_checklist.answers) || null; render(); }
-function saveConditions(){
-  var a = {};
-  document.querySelectorAll('.cl').forEach(function(c){ a[c.value] = c.checked; });
-  api('/api/checklist', {person:S.person, date:S.date, answers:a})
-    .then(function(){ ui.prefill = null; load(); }).catch(fail);
-}
-function redoConditions(){
-  if(S.scored){ return; }
-  ui.prefill = (S.checklist && S.checklist.answers) || null;
-  S.checklist = null; render();     // re-answer; the server keeps the history
+  api('/api/person', {name:n}).then(function(){ S.person = n; S.date = null; ui.choosing = false; load(); }).catch(fail);
 }
 
 function imgs(){ return (S.browse && S.browse.images) || []; }
@@ -2271,14 +2386,15 @@ function goHome(){ browseTo(S.inbox_path); }
 function doImport(){
   var files = Object.keys(sel).filter(function(k){return sel[k];});
   if(!files.length){ fail(new Error('Tick at least one photo.')); return; }
-  api('/api/import', {person:S.person, date:S.date, files:files, dir:(S.browse&&S.browse.path)||S.inbox_path})
+  recordConditions('import')
+    .then(function(){ return api('/api/import', {person:S.person, date:S.date, files:files, dir:(S.browse&&S.browse.path)||S.inbox_path}); })
     .then(function(j){ sel = {}; ui.forcePhotos = false; if(j.moved_to_new_take) S.date = j.session; load(); }).catch(fail);
 }
 function morePhotos(){ ui.forcePhotos = true; render(); }
 function goAnalyse(){ ui.forcePhotos = false; render(); }
 
 function analyse(){
-  api('/api/score', {person:S.person, date:S.date}).then(poll).catch(fail);
+  api('/api/score', {person:S.person, date:S.date}).then(function(){ S.job = {running:true, log:[], progress:{}}; render(); poll(); }).catch(fail);
 }
 function poll(){
   api('/api/job').then(function(j){
@@ -2289,7 +2405,10 @@ function poll(){
 }
 
 function addToTracker(){
-  api('/api/add', {person:S.person, date:S.date}).then(function(){ load(); }).catch(fail);
+  api('/api/add', {person:S.person, date:S.date}).then(function(){
+    ui.tab = 'progress'; ui.flags = {}; ui.flagNote = '';
+    return load();
+  }).then(function(){ toast('Added to your tracker'); }).catch(fail);
 }
 function reveal(what){
   api('/api/reveal', {person:S.person, date:S.date, what:what}).catch(fail);
@@ -2298,11 +2417,9 @@ function shootAgain(){
   /* Discard this session (moved to discarded/, never deleted) and go straight
      back to the camera with the same conditions answers, so a retake is one
      click. The discard is logged like any other. */
-  var answers = S.checklist && S.checklist.answers;
   api('/api/discard', {person:S.person, date:S.date, reason:'shoot again'})
     .then(function(){
       sel = {}; ui.prefill = null; ui.photoMode = 'camera'; ui.forcePhotos = false;
-      if(answers) return api('/api/checklist', {person:S.person, date:S.date, answers:answers});
     })
     .then(function(){ load(); }).catch(fail);
 }
@@ -2318,11 +2435,11 @@ function discard(){
   if(!confirm(msg)) return;
   var reason = prompt('Why? (optional — kept with the discarded session)', '') || '';
   api('/api/discard', {person:S.person, date:S.date, reason:reason})
-    .then(function(){ sel = {}; ui.prefill = null; load(); }).catch(fail);
+    .then(function(){ sel = {}; ui.prefill = null; ui.flags = {}; ui.flagNote = ''; load(); }).catch(fail);
 }
 function newSession(){
   api('/api/reshoot', {person:S.person, date:S.date})
-    .then(function(j){ S.date = j.session; sel = {}; ui.prefill = null; load(); }).catch(fail);
+    .then(function(j){ S.date = j.session; sel = {}; ui.prefill = null; ui.flags = {}; ui.flagNote = ''; ui.tab = 'capture'; load(); }).catch(fail);
 }
 
 load();
@@ -2414,7 +2531,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(404, '<p>No chart yet — score a session '
                                            'first.</p>', 'text/html')
                 with open(out) as fh:
-                    return self._send(200, fh.read(), 'text/html')
+                    page = fh.read()
+                if q.get('embed'):
+                    # inside the app the page header is the app header
+                    page = page.replace('</head>', '<style>.top{display:none}.viz-root{padding:4px 4px 12px}</style></head>')
+                return self._send(200, page, 'text/html')
             return self._json({'error': 'not found'}, 404)
         except ValueError as exc:
             return self._json({'error': str(exc)}, 400)

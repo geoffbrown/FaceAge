@@ -702,6 +702,11 @@ function bindTips(sel, attr){
 }
 bindTips('.hit', 'data-tip');
 bindTips('.help', 'data-help');
+/* inside the app: tell the frame how tall the page is */
+function tell(){ if(window.parent !== window) window.parent.postMessage({faceage:'height', h:document.body.offsetHeight}, '*'); }
+window.addEventListener('load', tell); window.addEventListener('resize', tell);
+document.addEventListener('click', function(){ setTimeout(tell, 250); });
+document.addEventListener('toggle', function(){ setTimeout(tell, 50); }, true);
 
 function post(path, body){
   return fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})

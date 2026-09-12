@@ -1161,6 +1161,88 @@ class TestTrackerPage(WebTestCase):
         self.assertIn('(baseline)', page)
 
 
+class TestFlags(WebTestCase):
+    """Conditions are recorded as exceptions: tap what is different, and the
+    absence of flags is the all-clear. Each flag fails the condition it belongs
+    to, the record is written before any number exists, and camera changes are
+    measured rather than asked."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def doc(self):
+        return self.w.read_checklist('me', '2026-09-13')
+
+    def test_no_flags_is_all_clear(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'flags': [], 'source': 'mac-camera'})
+        d = self.doc()
+        self.assertTrue(d['valid'])
+        self.assertEqual(d['failed'], [])
+        self.assertEqual(d['flags'], [])
+        self.assertTrue(all(d['answers'].values()))
+
+    def test_each_flag_fails_its_condition(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'flags': ['shave', 'sleep'], 'source': 'mac-camera'})
+        d = self.doc()
+        self.assertFalse(d['valid'])
+        self.assertFalse(d['answers']['grooming'])
+        self.assertFalse(d['answers']['photoday'])
+        self.assertTrue(d['answers']['light'])
+        self.assertEqual(d['failed'], ['did not shave', 'poor sleep'])
+        with open(os.path.join(self.w.results_dir('me'), 'session_validity.csv')) as fh:
+            self.assertIn('2026-09-13,no,did not shave; poor sleep', fh.read())
+
+    def test_something_else_carries_its_note(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'flags': ['other'], 'note': 'new glasses', 'source': 'mac-camera'})
+        d = self.doc()
+        self.assertFalse(d['valid'])
+        self.assertEqual(d['failed'], ['something else: new glasses'])
+
+    def test_unknown_flag_refused(self):
+        with self.assertRaises(ValueError):
+            self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'flags': ['hat']})
+
+    def test_camera_change_is_measured_once_the_study_has_started(self):
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-09', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-09')
+        # before the start line: rehearsal, nothing is failed for it
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'flags': [], 'source': 'mac-camera'})
+        self.assertTrue(self.doc()['valid'])
+        # after: a different camera from the series fails the camera condition by itself
+        with open(os.path.join(self.w.results_dir('me'), 'anchors.csv'), 'w') as fh:
+            fh.write('anchor,date,note\nB,2026-09-09,x\n')
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-14', 'flags': [], 'source': 'mac-camera'})
+        d = self.w.read_checklist('me', '2026-09-14')
+        self.assertFalse(d['valid'])
+        self.assertFalse(d['answers']['camera'])
+        self.assertIn('different camera', d['failed'][0])
+
+    def test_old_answers_form_still_accepted(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.assertTrue(self.doc()['valid'])
+        self.assertIsNone(self.doc()['flags'])
+
+    def test_still_refused_after_scoring(self):
+        self.history('me', '2026-09-13')
+        with self.assertRaises(ValueError):
+            self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'flags': []})
+
+    def test_embedded_tracker_hides_its_own_header(self):
+        import io
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-09', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-09')
+        out = self.w.build_chart('me')
+        with open(out) as fh:
+            page = fh.read()
+        self.assertIn("postMessage({faceage:'height'", page)
+
+
 class TestBaselinePerCamera(WebTestCase):
     """The exposure baseline is the first logged session's face brightness.
     That number only means something against the same camera, so a session
