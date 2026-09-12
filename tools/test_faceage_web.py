@@ -656,6 +656,50 @@ class TestPrefill(WebTestCase):
         self.assertIsNone(self.w.read_checklist('me', '2026-09-13'))
 
 
+class TestOneOff(WebTestCase):
+    """The choice that decides whether a session enters the series has to sit
+    next to the button that acts on it, and has to be readable from the code."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                          'files': ['IMG_1.jpg']})
+
+    def script(self):
+        import re
+        return re.search(r'<script>(.*?)</script>', self.w.PAGE, re.S).group(1)
+
+    def test_button_label_says_what_it_does(self):
+        js = self.script()
+        self.assertIn('Score and add to series', js)
+        self.assertIn('Score only', js)
+
+    def test_toggle_lives_in_the_score_card(self):
+        """It used to sit in the Person card at the top, far from its effect."""
+        js = self.script()
+        score_at = js.index('---- score ----')
+        person_at = js.index('---- person ----')
+        oneoff_at = js.index("id=\"oneoff\"")
+        self.assertGreater(oneoff_at, score_at)
+        self.assertGreater(score_at, person_at)
+
+    def test_oneoff_passes_no_log(self):
+        calls = []
+        self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
+        self.w.do_score({'person': 'me', 'date': '2026-09-13', 'oneoff': True})
+        self.assertIn('--no-log', calls[0])
+
+    def test_tracked_run_does_not(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        calls = []
+        self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
+        self.w.do_score({'person': 'me', 'date': '2026-09-13'})
+        self.assertNotIn('--no-log', calls[0])
+
+
 class TestProgress(WebTestCase):
     def test_parses_phase_and_position(self):
         p = self.w.parse_progress([
