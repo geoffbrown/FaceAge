@@ -203,6 +203,8 @@ def plot(rows, pre_b, fit, anchors, W=760, H=250):
     d0, d1 = pts[0]['date'], pts[-1]['date']
     for a in (anchors or {}).values():
         d0, d1 = min(d0, a), max(d1, a)
+    if d0 == d1:                             # one session: centre it, a week either side
+        d0, d1 = d0 - datetime.timedelta(days=7), d1 + datetime.timedelta(days=7)
     span = max((d1 - d0).days, 1)
     pre_labels = {r['label'] for r in pre_b}
 
@@ -401,6 +403,8 @@ def main():
         caption += 'The dashed line is the trend, with the grey ribbon showing how sure it is.'
     elif len(cams_series) > 1:
         caption += 'No trend line while two cameras are mixed.'
+    elif len(rows) == 1:
+        caption += 'Your first point. The line starts with your next session.'
     else:
         caption += 'A trend line appears once there are three sessions.'
     chart_card = ('<section class="card"><div class="card-h"><h2>Over time</h2>%s</div>%s'

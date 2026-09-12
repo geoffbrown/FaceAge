@@ -1335,8 +1335,7 @@ html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--ink);
   font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,"Segoe UI",Helvetica,Arial,sans-serif;
   -webkit-font-smoothing:antialiased}
-.wrap{max-width:640px;margin:0 auto;padding:36px 20px 80px;transition:max-width .25s ease}
-.wrap.wide{max-width:900px}
+.wrap{max-width:900px;margin:0 auto;padding:36px 20px 80px}
 
 /* header */
 .top{display:flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap}
@@ -1359,7 +1358,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .flag.on{background:var(--warn-bg);border-color:var(--warn);color:var(--warn);font-weight:600}
 .banner{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:12px;background:var(--good-bg);margin-bottom:16px;font-size:14px;line-height:1.5}
 .banner b{display:block;margin-bottom:2px}
-.trk{width:100%;border:0;border-radius:16px;background:var(--card);min-height:70vh;display:block}
+.trk{width:100%;border:0;background:transparent;min-height:70vh;display:block}
 .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);padding:12px 18px;border-radius:12px;background:var(--ink);color:var(--card);
   font-weight:600;font-size:14px;box-shadow:var(--shadow);z-index:20}
 .toast[hidden]{display:none}
@@ -1441,6 +1440,12 @@ select{padding-right:32px}
 .modes button{flex:1;padding:12px 14px;text-align:left;border-radius:12px;line-height:1.3}
 .modes button.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--card)}
 .modes small{display:block;font-weight:500;color:var(--ink3);font-size:12.5px;margin-top:2px}
+.camgrid{display:grid;grid-template-columns:minmax(0,400px) minmax(0,1fr);gap:8px 28px;align-items:start}
+.camside{padding-top:2px}
+.camside .camstats{justify-content:flex-start;margin-top:0}
+.camside .flags{margin-top:18px}
+.camside .hint{margin-top:14px}
+@media (max-width:760px){.camgrid{grid-template-columns:1fr}.camside .camstats{justify-content:center}}
 .camwrap{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:3/4;
   width:min(100%,400px);margin:0 auto;box-shadow:0 0 0 3px transparent;transition:box-shadow .25s}
 .camwrap video{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
@@ -1648,7 +1653,6 @@ function render(){
   if(!(ui.tab==='capture' && step===2 && ui.photoMode==='camera')) camStop();
   document.getElementById('foot').innerHTML =
     'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>';
-  var wrap = document.querySelector('.wrap'); if(wrap) wrap.className = 'wrap' + (ui.tab==='progress' && S.person ? ' wide' : '');
   document.getElementById('tabs').innerHTML = S.person
     ? '<button class="'+(ui.tab==='capture'?'on':'')+'" onclick="setTab(\'capture\')">New session</button>'+
       '<button class="'+(ui.tab==='progress'?'on':'')+'" onclick="setTab(\'progress\')">Progress</button>' : '';
@@ -1874,6 +1878,7 @@ function cardCamera(){
     o.push('<p class="hint">Allow camera access for 127.0.0.1 in the browser’s address bar or in System Settings › Privacy &amp; Security › Camera, then <button class="quiet" style="padding:2px 6px" onclick="camRetry()">try again</button>.</p></div>');
     return o.join('');
   }
+  o.push('<div class="camgrid"><div class="camcol">');
   o.push('<div class="camwrap none" id="camwrap"><video id="cam" autoplay playsinline muted></video><canvas id="camview"></canvas>'+overlaySvg()+
          '<div class="flash" id="camflash"></div><div class="cd" id="camcd"></div>'+
          '<div class="msg" id="cammsg">'+(CAM.stream?'Looking for your face…':'Starting the camera…')+'</div></div>');
@@ -1882,11 +1887,13 @@ function cardCamera(){
          (S.staged.length ? '<button class="quiet" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>' : '')+
          '<button class="primary big" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
          (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button></div>');
+  o.push('</div><div class="camside">');
   o.push('<div class="camstats"><span id="camlight"></span><span id="camfill"></span><span id="camres"></span></div>');
   o.push(flagsHtml());
   o.push('<p class="hint" id="cambase">'+baselineLine()+'</p>');
   o.push('<div class="camopts"><label><input type="checkbox" id="camauto"'+(CAM.armed?' checked':'')+'> Start automatically when lined up</label>'+
          '<label><input type="checkbox" id="camsound"'+(CAM.muted?'':' checked')+'> Sound</label></div>');
+  o.push('</div></div>');
   o.push(guideHtml(false));
   o.push('<p class="hint">Photos are saved unmirrored, straight into this session’s folder, as the part of the picture inside the frame above. Keep the Mac in the same place every time; mark it if you can.</p>');
   o.push('<p class="hint">Have photos from your phone instead? <button class="quiet inline" onclick="setMode(\'import\')">Import them</button>.</p>');
@@ -2596,7 +2603,8 @@ class Handler(BaseHTTPRequestHandler):
                     page = fh.read()
                 if q.get('embed'):
                     # inside the app the page header is the app header
-                    page = page.replace('</head>', '<style>.top{display:none}.viz-root{padding:4px 4px 12px}</style></head>')
+                    page = page.replace('</head>', '<style>.top{display:none}body,.viz-root{background:transparent}'
+                                                   '.viz-root{padding:4px 4px 12px}</style></head>')
                 return self._send(200, page, 'text/html')
             return self._json({'error': 'not found'}, 404)
         except ValueError as exc:
