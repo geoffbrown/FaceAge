@@ -352,7 +352,8 @@ def main():
         '<tr%s><td>%s</td><td>%s</td><td class="r">%s</td><td class="r">%.2f</td><td class="r">%s</td>'
         '<td class="r">%d</td><td class="r">%s</td><td class="r">%s</td>'
         '<td class="r">%s</td><td class="note" contenteditable data-session="%s">%s</td>'
-        '<td class="rm"><button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
+        '<td class="rm"><button class="rm fo" data-session="%s" title="Show this session\'s photos in Finder">folder</button> '
+        '<button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
         % (' class="sus"' if r['_suspect'] else '', html.escape(r['label']),
            html.escape(r.get('camera') or ''),
            html.escape(r['run_time']), r['mean'],
@@ -361,7 +362,7 @@ def main():
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
            ('%d' % r['flagged']) if r['flagged'] else '0',
            html.escape(r['label'], quote=True), html.escape(r['notes']),
-           html.escape(r['label'], quote=True))
+           html.escape(r['label'], quote=True), html.escape(r['label'], quote=True))
         for r in rows)
     # Same eleven columns as the rows above, or the table misaligns.
     trows += ''.join(
@@ -369,13 +370,14 @@ def main():
         '<td class="r">—</td><td class="r">%d</td><td class="r">—</td>'
         '<td class="r">%s</td><td class="r" title="%s">excluded</td>'
         '<td class="note" contenteditable data-session="%s">%s</td>'
-        '<td class="rm"><button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
+        '<td class="rm"><button class="rm fo" data-session="%s" title="Show this session\'s photos in Finder">folder</button> '
+        '<button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
         % (html.escape(r['label']), html.escape(r.get('camera') or ''),
            html.escape(r['run_time']), r['mean'], r['n'],
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
            html.escape(r.get('reason') or '', quote=True),
            html.escape(r['label'], quote=True), html.escape(r['notes']),
-           html.escape(r['label'], quote=True))
+           html.escape(r['label'], quote=True), html.escape(r['label'], quote=True))
         for r in excluded)
 
     cameras = sorted({r['camera'] for r in rows + excluded if r.get('camera')})
@@ -507,7 +509,8 @@ ul.notes li{margin-bottom:7px}
 </style></head>
 <body><div class="viz-root">
 <h1>FaceAge tracker <span class="subj">__SUBJ__</span></h1>
-<p class="sub">Local summary statistics only — no photographs. Generated __GEN__.</p>
+<p class="sub">Local summary statistics only — no photographs. Generated __GEN__.
+  <button class="rm" id="open-results" title="Open the results folder in Finder">open data folder</button></p>
 <div class="tiles">__TILES__</div>
 
 <div class="card">
@@ -547,7 +550,20 @@ document.querySelectorAll('.hit').forEach(function(el){
 });
 /* --- remove a session from the tracker (served by `faceage app` only) --- */
 if(!(location.protocol==='http:'||location.protocol==='https:')) document.body.className='file';
-document.querySelectorAll('button.rm').forEach(function(b){
+function post(path,body){
+  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json().then(function(j){ if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j;});});
+}
+document.querySelectorAll('button.fo').forEach(function(b){
+  b.addEventListener('click',function(){
+    post('/api/reveal',{person:'__SUBJ__',date:b.getAttribute('data-session'),what:'session'})
+      .catch(function(e){ alert('Could not open: '+e.message); });
+  });
+});
+document.getElementById('open-results').addEventListener('click',function(){
+  post('/api/reveal',{person:'__SUBJ__',what:'results'}).catch(function(e){ alert('Could not open: '+e.message); });
+});
+document.querySelectorAll('button.rm:not(.fo)').forEach(function(b){
   b.addEventListener('click',function(){
     var d=b.getAttribute('data-session');
     if(!confirm('Remove '+d+' from the tracker?\n\nThe row leaves the history and the chart. The photos, '+
