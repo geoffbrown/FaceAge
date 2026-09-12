@@ -180,7 +180,17 @@ def baseline_info(name, source=None):
         src = session_source(name, d)
         if source and src != source:
             continue
-        return {'luma': luma, 'date': d, 'source': src}
+        info = {'luma': luma, 'date': d, 'source': src}
+        # The camera screen measures brightness live, and that estimate sits a
+        # few units off the pipeline's crop mean for the same scene. The live
+        # readings the baseline session recorded are the fair comparison for
+        # later live readings, so carry them alongside the pipeline number.
+        m = capture_manifest(name, d)
+        if m:
+            lumas = [f.get('luma') for f in m.get('frames', []) if isinstance(f.get('luma'), (int, float))]
+            if lumas:
+                info['live_luma'] = round(sum(lumas) / len(lumas), 1)
+        return info
     return None
 
 
@@ -1821,10 +1831,21 @@ function overlaySvg(){
     '</svg>';
 }
 
-function baselineLine(){
+function liveBase(){
+  /* live compares to live: the baseline session recorded what this readout
+     said at the time. Only if that is missing does the pipeline number stand
+     in, with a looser tolerance because the two are not the same measure. */
   var b = S.baseline_camera;
-  if(b && b.luma!=null)
-    return 'Brightness baseline for this camera: <b>'+Math.round(b.luma)+'</b>, set '+h(niceDate(b.date))+'.';
+  if(!b) return null;
+  if(b.live_luma!=null) return {value:b.live_luma, tol:TARGET.lumaTol, live:true};
+  if(b.luma!=null) return {value:b.luma, tol:10, live:false};
+  return null;
+}
+function baselineLine(){
+  var b = S.baseline_camera, lb = liveBase();
+  if(lb)
+    return 'Brightness baseline for this camera: <b>'+Math.round(lb.value)+'</b>, set '+h(niceDate(b.date))+'.'+
+           (lb.live ? '' : ' Measured differently at the time, so the match is approximate.');
   return 'No brightness baseline for this camera yet. This session sets it, so get the light how you want it and keep it that way.';
 }
 
@@ -2037,12 +2058,12 @@ function detect(v, R){
 
 function guidance(){
   var f = CAM.face, msg, state, wasAligned = CAM.aligned;
-  var base = (S.baseline_camera && S.baseline_camera.luma!=null) ? S.baseline_camera.luma : null;
+  var lb = liveBase(), base = lb ? lb.value : null;
   var L = CAM.luma, lumaMsg = '', lumaCls = '';
   if(L!=null){
     if(base!=null){
       var dl = L - base;
-      CAM.lumaOk = Math.abs(dl) <= TARGET.lumaTol;
+      CAM.lumaOk = Math.abs(dl) <= lb.tol;
       lumaCls = CAM.lumaOk ? 'good' : 'bad';
       lumaMsg = CAM.lumaOk ? '' : (dl>0 ? 'a bit bright: dim the lamp or move it back' : 'a bit dark: bring the lamp closer or turn it up');
     } else {
