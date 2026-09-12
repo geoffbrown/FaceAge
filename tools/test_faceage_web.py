@@ -155,6 +155,78 @@ class TestImport(WebTestCase):
         self.assertEqual(r['copied'], ['IMG_9.HEIC'])
 
 
+class TestBrowsing(WebTestCase):
+    """Folder picking. The server can read the filesystem, so the reachable
+    area is bounded and every path is resolved before use."""
+
+    def test_lists_images_and_subfolders(self):
+        os.makedirs(os.path.join(self.inbox, 'trip'))
+        os.makedirs(os.path.join(self.inbox, '.hidden'))
+        self.put_inbox('a.jpg', 'b.HEIC', 'notes.txt')
+        r = self.w.list_dir(self.inbox)
+        self.assertEqual(r['dirs'], ['trip'])            # hidden dir skipped
+        names = [i['file'] for i in r['images']]
+        self.assertIn('a.jpg', names)
+        self.assertIn('b.HEIC', names)
+        self.assertNotIn('notes.txt', names)             # not an image
+
+    def test_refuses_outside_allowed_roots(self):
+        for bad in ('/etc', '/usr/bin', '/'):
+            with self.assertRaises(ValueError, msg=bad):
+                self.w.safe_dir(bad)
+
+    def test_refuses_a_file(self):
+        self.put_inbox('a.jpg')
+        with self.assertRaises(ValueError):
+            self.w.safe_dir(os.path.join(self.inbox, 'a.jpg'))
+
+    def test_symlink_out_does_not_widen_the_boundary(self):
+        link = os.path.join(self.inbox, 'escape')
+        os.symlink('/etc', link)
+        with self.assertRaises(ValueError):
+            self.w.safe_dir(link)
+
+    def test_traversal_is_resolved_before_checking(self):
+        with self.assertRaises(ValueError):
+            self.w.safe_dir(os.path.join(self.inbox, '..', '..', '..', 'etc'))
+
+    def test_parent_is_none_at_the_boundary(self):
+        r = self.w.list_dir(self.inbox)
+        self.assertIsNotNone(r['path'])
+        # walking up eventually leaves the allowed roots and stops
+        seen, cur = 0, r
+        while cur['parent'] and seen < 20:
+            cur = self.w.list_dir(cur['parent'])
+            seen += 1
+        self.assertIsNone(cur['parent'])
+
+    def test_import_from_a_chosen_folder(self):
+        other = os.path.join(self.inbox, 'pics', '9_11_26')
+        os.makedirs(other)
+        for n in ('IMG_1.jpg', 'IMG_2.jpg'):
+            with open(os.path.join(other, n), 'wb') as fh:
+                fh.write(b'\xff\xd8\xff\xe0stub')
+        self.person()
+        r = self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                              'dir': other, 'files': ['IMG_1.jpg', 'IMG_2.jpg']})
+        self.assertEqual(sorted(r['copied']), ['IMG_1.jpg', 'IMG_2.jpg'])
+        self.assertTrue(os.path.exists(os.path.join(other, 'IMG_1.jpg')),
+                        'import must copy, not move')
+
+    def test_import_from_a_forbidden_folder_is_refused(self):
+        self.person()
+        with self.assertRaises(ValueError):
+            self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                              'dir': '/etc', 'files': ['passwd']})
+
+    def test_state_carries_the_browsed_folder(self):
+        sub = os.path.join(self.inbox, 'trip')
+        os.makedirs(sub)
+        self.person()
+        st = self.w.state('me', '2026-09-13', browse=sub)
+        self.assertEqual(st['browse']['path'], os.path.realpath(sub))
+
+
 class TestChecklistOrdering(WebTestCase):
     """§1 — the ordering is the point, so it is enforced server-side."""
 
