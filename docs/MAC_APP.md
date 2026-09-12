@@ -73,6 +73,15 @@ scope for the same reason it always was.
 
 **Capture or import → QA → score → chart.**
 
+The app is two tabs: **New session** and **Progress**. A new session is camera, analysis,
+result. There is no separate conditions step: the capture records camera, light and framing
+by measurement, and an "Anything different today?" strip on the camera screen records the
+exceptions only the person knows (shave, makeup, light, skin, alcohol, sleep, shower, moved
+the Mac, something else) the moment capture starts, before any number exists. Nothing
+tapped is the all-clear. The Who step appears only when nobody exists yet; the last person
+is remembered. After ten frames the analysis starts by itself. Adding a session switches to
+Progress, which is the tracker page embedded in the app.
+
 1. **Import** a session's photos from the phone (AirDrop, Photos, Image Capture, or a
    watched folder).
 2. **Stage** them into `$FACEAGE_DATA/subjects/<name>/sessions/YYYY-MM-DD/`.
