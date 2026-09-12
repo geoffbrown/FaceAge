@@ -1153,6 +1153,9 @@ def state(person=None, date=None, browse=None):
                   'series_source': series_source(person),
                   'baseline_luma': baseline_luma(person, session_source(person, date)),
                   'baseline': baseline_info(person, session_source(person, date)),
+                  # the camera step runs before any frame exists, so it cannot
+                  # infer the source from the session: ask for the Mac's directly
+                  'baseline_camera': baseline_info(person, 'mac-camera'),
                   'preflight': do_preflight(person, date)})
     return s
 
@@ -1610,7 +1613,7 @@ function overlaySvg(){
 }
 
 function baselineLine(){
-  var b = S.baseline;
+  var b = S.baseline_camera;
   if(b && b.luma!=null)
     return 'Brightness baseline for this camera: <b>'+Math.round(b.luma)+'</b>, set '+h(niceDate(b.date))+'.';
   return 'No brightness baseline for this camera yet. This session sets it, so get the light how you want it and keep it that way.';
@@ -1672,10 +1675,20 @@ function audioUnlock(){
     if(audioUnlock.ctx.resume) audioUnlock.ctx.resume();
   } catch(e){}
 }
+if(typeof document !== 'undefined' && document.addEventListener){
+  // Safari only lets a page make sound after a gesture; any click or key will do
+  ['pointerdown','keydown','touchstart'].forEach(function(ev){ document.addEventListener(ev, audioUnlock, {passive:true}); });
+}
 function beep(notes){
   if(CAM.muted) return;
   try {
     audioUnlock(); var ctx = audioUnlock.ctx; if(!ctx) return;
+    if(ctx.state === 'suspended' && ctx.resume){ ctx.resume().then(function(){ playNotes(ctx, notes); }); return; }
+    playNotes(ctx, notes);
+  } catch(e){}
+}
+function playNotes(ctx, notes){
+  try {
     var t = ctx.currentTime;
     notes.forEach(function(n){               // [frequency, start offset, length]
       var o = ctx.createOscillator(), g = ctx.createGain();
@@ -1793,24 +1806,24 @@ function detect(v, R){
       CAM.face = {cy:(b[0]-ry0)/rh, cx:(b[1]-rx0)/rw, s:b[2]/rh, q:b[3]};
     }
   }
-  // brightness on the face (inside the ring) or, without a face, the oval
+  /* Brightness the way the pipeline measures it: the plain mean of R, G and B
+     over the face box (forehead to chin, about 0.79 as wide as tall), whose
+     centre sits a little below the detector centre. Without a face, the oval. */
   var f = CAM.face;
-  var cx = f ? rx0 + f.cx*rw : rx0 + rw/2, cy = f ? ry0 + f.cy*rh : ry0 + rh*0.5;
-  var r = f ? f.s*rh*0.42 : rh*0.42, rxx = f ? r : rw*0.43;
+  var bh = f ? f.s*PICO_TO_BOX*rh : rh*0.85, bw = bh*0.79;
+  var cx = f ? rx0 + f.cx*rw : rx0 + rw/2, cy = f ? ry0 + (f.cy+0.07)*rh : ry0 + rh*0.5;
+  var y0 = Math.max(0, Math.round(cy-bh/2)), y1 = Math.min(Hd, Math.round(cy+bh/2));
+  var x0 = Math.max(0, Math.round(cx-bw/2)), x1 = Math.min(Wd, Math.round(cx+bw/2));
   var sum = 0, n = 0;
-  var y0 = Math.max(0, Math.floor(cy-r)), y1 = Math.min(Hd, Math.ceil(cy+r));
-  var x0 = Math.max(0, Math.floor(cx-rxx)), x1 = Math.min(Wd, Math.ceil(cx+rxx));
   for(var y=y0;y<y1;y++) for(var x=x0;x<x1;x++){
-    var dx=(x+0.5-cx)/rxx, dy=(y+0.5-cy)/r;
-    if(dx*dx+dy*dy>1) continue;
-    sum += gray[y*Wd+x]; n++;
+    var i4 = (y*Wd+x)*4; sum += d[i4] + d[i4+1] + d[i4+2]; n += 3;
   }
   CAM.luma = n ? sum/n : null;
 }
 
 function guidance(){
   var f = CAM.face, msg, state, wasAligned = CAM.aligned;
-  var base = (S.baseline && S.baseline.luma!=null) ? S.baseline.luma : null;
+  var base = (S.baseline_camera && S.baseline_camera.luma!=null) ? S.baseline_camera.luma : null;
   var L = CAM.luma, lumaMsg = '', lumaCls = '';
   if(L!=null){
     if(base!=null){

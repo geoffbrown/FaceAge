@@ -1057,6 +1057,16 @@ class TestBaselinePerCamera(WebTestCase):
         st = self.w.state('me', '2026-09-09')
         self.assertEqual(st['baseline']['luma'], 128.6)
 
+    def test_camera_step_gets_the_mac_baseline_before_any_frame_exists(self):
+        self.imported('2026-09-06', 128.6)
+        st = self.w.state('me', '2026-09-13')          # empty session, no source yet
+        self.assertEqual(st['baseline']['luma'], 128.6, 'generic baseline is the first row')
+        self.assertIsNone(st['baseline_camera'], 'but the Mac camera has none yet')
+        self.captured('2026-09-12', 115.0)
+        st = self.w.state('me', '2026-09-13')
+        self.assertEqual(st['baseline_camera']['luma'], 115.0)
+        self.assertEqual(st['baseline_camera']['date'], '2026-09-12')
+
     def test_session_result_compares_like_with_like(self):
         self.imported('2026-09-09', 128.6)
         self.captured('2026-09-12', 119.0)
