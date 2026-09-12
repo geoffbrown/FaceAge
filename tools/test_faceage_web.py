@@ -1004,6 +1004,47 @@ class TestRemoveFromTracker(WebTestCase):
         self.assertIn("'/api/remove'", page)
 
 
+class TestReveal(WebTestCase):
+    """Opening a folder in Finder is the one thing here that leaves the
+    browser. The path is built server-side from person and date, never taken
+    from the request, and only the session or results folder can be opened."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        self.opened = []
+        self.w.reveal_path = lambda p: self.opened.append(p)
+
+    def test_session_folder(self):
+        os.makedirs(self.w.session_dir('me', '2026-09-13'))
+        r = self.w.do_reveal({'person': 'me', 'date': '2026-09-13'})
+        self.assertEqual(self.opened, [self.w.session_dir('me', '2026-09-13')])
+        self.assertEqual(r['path'], self.w.session_dir('me', '2026-09-13'))
+
+    def test_results_folder(self):
+        os.makedirs(self.w.results_dir('me'), exist_ok=True)
+        self.w.do_reveal({'person': 'me', 'what': 'results'})
+        self.assertEqual(self.opened, [self.w.results_dir('me')])
+
+    def test_nothing_else(self):
+        for body in ({'person': 'me', 'what': '/etc'}, {'person': 'me', 'date': '../x'},
+                     {'person': 'me', 'date': '2026-09-13'}):      # last: no folder yet
+            with self.assertRaises(ValueError, msg=str(body)):
+                self.w.do_reveal(body)
+        self.assertEqual(self.opened, [])
+
+    def test_route_and_tracker_links(self):
+        self.assertIs(self.w.ROUTES_POST['/api/reveal'], self.w.do_reveal)
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-10', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-10')
+        with open(self.w.build_chart('me')) as fh:
+            page = fh.read()
+        self.assertIn('class="rm fo" data-session="2026-09-10"', page)
+        self.assertIn('id="open-results"', page)
+        self.assertIn("'/api/reveal'", page)
+
+
 class TestBaselinePerCamera(WebTestCase):
     """The exposure baseline is the first logged session's face brightness.
     That number only means something against the same camera, so a session

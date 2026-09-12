@@ -1066,6 +1066,33 @@ def do_preflight(person, date):
             'findings': [f.as_dict() for f in findings]}
 
 
+def reveal_path(path):
+    """Show a folder in the Mac's Finder (or the desktop's file manager)."""
+    if sys.platform == 'darwin':
+        cmd = ['open', path]
+    else:
+        cmd = ['xdg-open', path]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def do_reveal(body):
+    """Open this session's photo folder, or the person's results folder, in
+    Finder. Only those two places: the path is built here, never taken from
+    the request."""
+    name = safe_subject(body.get('person'))
+    what = body.get('what') or 'session'
+    if what == 'results':
+        path = results_dir(name)
+    elif what == 'session':
+        path = session_dir(name, safe_date(body.get('date')))
+    else:
+        raise ValueError('what must be session or results')
+    if not os.path.isdir(path):
+        raise ValueError('no folder yet at %s' % path)
+    reveal_path(path)
+    return {'ok': True, 'path': path}
+
+
 def do_notes(body):
     """Save session notes typed into the tracker.
 
@@ -1292,6 +1319,9 @@ select{padding-right:32px}
 .camstats b{color:var(--ink);font-weight:600}
 .camstats .good{color:var(--good)} .camstats .good b{color:var(--good)}
 .camstats .bad{color:var(--bad)} .camstats .bad b{color:var(--bad)}
+.camgo{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:14px}
+.camgo button.big{padding:14px 28px;font-size:16px;border-radius:12px}
+.camstats .dim{color:var(--ink3)}
 .camopts{display:flex;flex-wrap:wrap;gap:6px 20px;margin:10px 0 14px;font-size:13.5px;color:var(--ink2)}
 .camopts label{display:flex;align-items:center;gap:6px;cursor:pointer}
 .camopts input{accent-color:var(--accent);width:16px;height:16px}
@@ -1640,19 +1670,16 @@ function cardCamera(){
   o.push('<div class="camwrap none" id="camwrap"><video id="cam" autoplay playsinline muted></video><canvas id="camview"></canvas>'+overlaySvg()+
          '<div class="flash" id="camflash"></div><div class="cd" id="camcd"></div>'+
          '<div class="msg" id="cammsg">'+(CAM.stream?'Looking for your face…':'Starting the camera…')+'</div></div>');
+  // Start sits right under the frame, where the eye already is
+  o.push('<div class="camgo">'+
+         (S.staged.length ? '<button class="quiet" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>' : '')+
+         '<button class="primary big" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
+         (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button></div>');
   o.push('<div class="camstats"><span id="camlight"></span><span id="camfill"></span><span id="camres"></span></div>');
   o.push('<p class="hint" id="cambase">'+baselineLine()+'</p>');
   o.push('<div class="camopts"><label><input type="checkbox" id="camauto"'+(CAM.armed?' checked':'')+'> Start automatically when lined up</label>'+
          '<label><input type="checkbox" id="camsound"'+(CAM.muted?'':' checked')+'> Sound</label></div>');
   o.push(guideHtml(false));
-  o.push('<div class="actions">');
-  if(S.staged.length)
-    o.push('<span class="staged" style="margin:0">In this session: <b>'+S.staged.length+'</b></span>');
-  o.push('<span class="sp"></span>');
-  if(S.staged.length)
-    o.push('<button class="quiet" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>');
-  o.push('<button class="primary" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
-         (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button></div>');
   o.push('<p class="hint">Photos are saved unmirrored, straight into this session’s folder, as the part of the picture inside the frame above. Keep the Mac in the same place every time; mark it if you can.</p>');
   o.push('</div>');
   return o.join('');
@@ -1799,10 +1826,16 @@ function detect(v, R){
     var dets = pico.run_cascade({pixels:gray, nrows:Hd, ncols:Wd, ldim:Wd}, CAM.classify,
                                 {shiftfactor:0.1, minsize:Math.round(rh*0.3), maxsize:Math.min(Hd, Wd), scalefactor:1.1});
     dets = CAM.mem(dets);
-    dets = pico.cluster_detections(dets, 0.2).filter(function(x){ return x[3] > 30; })
-              .sort(function(a,b){ return b[3]-a[3]; });
-    if(dets.length){
-      var b = dets[0];                                // [row, col, size, score]
+    /* Score is summed over the last three frames. Glasses and a beard pull it
+       down, so the bar is low and the sanity checks do the work: the face
+       must be at least a third of the crop height and roughly inside it. */
+    var all = pico.cluster_detections(dets, 0.2).sort(function(a,b){ return b[3]-a[3]; });
+    CAM.best = all.length ? Math.round(all[0][3]) : null;
+    var ok = all.filter(function(x){
+      var cx = (x[1]-rx0)/rw, cy = (x[0]-ry0)/rh;
+      return x[3] > 12 && x[2] >= rh*0.33 && cx > -0.2 && cx < 1.2 && cy > -0.2 && cy < 1.2; });
+    if(ok.length){
+      var b = ok[0];                                  // [row, col, size, score]
       CAM.face = {cy:(b[0]-ry0)/rh, cx:(b[1]-rx0)/rw, s:b[2]/rh, q:b[3]};
     }
   }
@@ -1865,7 +1898,8 @@ function guidance(){
       (base!=null ? ' · baseline '+Math.round(base)+(CAM.lumaOk?' ✓':'') : '');
   }
   var fe = document.getElementById('camfill');
-  if(fe) fe.innerHTML = f ? 'face <b>'+Math.round(f.s*PICO_TO_BOX*100)+'%</b> of frame height' : '';
+  if(fe) fe.innerHTML = f ? 'face <b>'+Math.round(f.s*PICO_TO_BOX*100)+'%</b> of frame height'
+                          : (CAM.best!=null ? '<span class="dim">no face yet (best guess scored '+CAM.best+')</span>' : '');
 
   if(CAM.aligned && CAM.armed && !CAM.running && CAM.stream && now()-CAM.alignedSince >= HOLD_MS) startCapture();
 }
@@ -2034,7 +2068,8 @@ function cardResult(){
            '. '+(S.has_b ? 'Adding it would compare two cameras, not two dates.'
                         : 'Those earlier sessions were rehearsals: set your baseline anchor at this session and they drop out of the trend.')+'</div>');
 
-  o.push('<div class="actions"><button class="danger" onclick="discard()">Discard this session</button><span class="sp"></span>'+
+  o.push('<div class="actions"><button class="danger" onclick="discard()">Discard this session</button>'+
+         '<button class="quiet" onclick="reveal(\'session\')">Show photos in Finder</button><span class="sp"></span>'+
          '<button class="primary" onclick="addToTracker()">Add to my tracker</button></div>');
   o.push('<p class="hint">Photos are never edited. If something is off, change the setup and shoot again.</p>');
   o.push('</div>');
@@ -2048,6 +2083,7 @@ function cardDone(R){
          (R.valid?'':' · kept out of the trend line because of the conditions you noted')+'</p></div>'+
          '<div class="actions" style="justify-content:center">'+
          '<a href="/tracker?person='+encodeURIComponent(S.person)+'" target="_blank"><button>View tracker</button></a>'+
+         '<button onclick="reveal(\'session\')">Show photos in Finder</button>'+
          '<button class="primary" onclick="newSession()">Start a new session</button></div>'+
          '<p class="hint" style="text-align:center">Changed your mind? <button class="quiet" style="padding:2px 6px" onclick="removeFromTracker()">Remove it from the tracker</button></p></div>';
 }
@@ -2130,6 +2166,9 @@ function poll(){
 function addToTracker(){
   api('/api/add', {person:S.person, date:S.date}).then(function(){ load(); }).catch(fail);
 }
+function reveal(what){
+  api('/api/reveal', {person:S.person, date:S.date, what:what}).catch(fail);
+}
 function removeFromTracker(){
   var msg = 'Remove '+niceDate(S.date)+' from the tracker? The photos and result stay; only the tracker row goes, and the removal is logged.';
   if(S.has_b) msg += '\n\nThis session is after your baseline anchor, so it is study data. Removing it after seeing the number is the thing the rules warn about; marking it invalid with a reason is the cleaner path.';
@@ -2175,6 +2214,7 @@ ROUTES_POST = {
     '/api/discard': do_discard,
     '/api/add': do_add,
     '/api/remove': do_remove,
+    '/api/reveal': do_reveal,
     '/api/person/rename': do_rename,
 }
 
