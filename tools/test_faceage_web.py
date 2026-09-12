@@ -475,6 +475,81 @@ class TestStaleness(WebTestCase):
                                  'answers': {k: True for k, _ in self.w.CHECKLIST}})
 
 
+class TestSessionResult(WebTestCase):
+    """After scoring, the number must be visible in the app, not only in the
+    chart."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def summary(self, date='2026-09-13', **kw):
+        d = {'n': 9, 'n_total_images': 10, 'n_failed': 1, 'n_flagged': 0,
+             'fellback_to_flagged': False, 'mean': 44.12, 'median': 44.05,
+             'std': 0.81, 'min': 42.9, 'max': 45.4, 'luma': 121.3,
+             'session_date': date}
+        d.update(kw)
+        p = os.path.join(self.w.results_dir('me'), '%s_summary.json' % date)
+        with open(p, 'w') as fh:
+            json.dump(d, fh)
+
+    def test_none_before_scoring(self):
+        self.assertIsNone(self.w.session_result('me', '2026-09-13'))
+
+    def test_reads_the_summary(self):
+        self.summary()
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertAlmostEqual(r['mean'], 44.12)
+        self.assertEqual((r['n'], r['n_total'], r['n_failed']), (9, 10, 1))
+
+    def test_exposure_compared_to_baseline(self):
+        self.history('me', '2026-09-11', luma=121.3)
+        self.summary(luma=128.0)
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertAlmostEqual(r['luma_delta'], 6.7)
+        self.assertFalse(r['luma_ok'])              # outside the +/-5 band
+
+    def test_exposure_within_band(self):
+        self.history('me', '2026-09-11', luma=121.3)
+        self.summary(luma=123.0)
+        self.assertTrue(self.w.session_result('me', '2026-09-13')['luma_ok'])
+
+    def test_protocol_failure_is_marked_out_of_series(self):
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'answers': a})
+        self.summary()
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertFalse(r['in_series'])
+        self.assertIn('Frontal light', r['excluded_reason'])
+
+    def test_valid_checklist_is_in_series(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.summary()
+        self.assertTrue(self.w.session_result('me', '2026-09-13')['in_series'])
+
+    def test_no_pairwise_delta_is_exposed(self):
+        """§3: pairwise session deltas are not interpreted. The result must not
+        hand the UI a change-since-last-session to render."""
+        self.history('me', '2026-09-11', luma=121.3)
+        self.summary()
+        r = self.w.session_result('me', '2026-09-13')
+        for k in r:
+            self.assertNotIn('delta', k.replace('luma_delta', ''),
+                             'unexpected delta field %s' % k)
+
+    def test_fellback_flag_surfaces(self):
+        self.summary(fellback_to_flagged=True)
+        self.assertTrue(self.w.session_result('me', '2026-09-13')['fellback'])
+
+    def test_corrupt_summary_does_not_break_state(self):
+        p = os.path.join(self.w.results_dir('me'), '2026-09-13_summary.json')
+        with open(p, 'w') as fh:
+            fh.write('{not json')
+        self.assertIsNone(self.w.session_result('me', '2026-09-13'))
+
+
 class TestProgress(WebTestCase):
     def test_parses_phase_and_position(self):
         p = self.w.parse_progress([
