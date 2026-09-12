@@ -5,12 +5,13 @@ Reads ~/FaceAgeData/results/faceage_history.csv and writes tracker.html beside i
 Stdlib only, no network, no external assets - the page works offline and nothing
 leaves this machine. Contains summary statistics only; no photographs.
 """
-import csv, os, sys, math, html, datetime
+import csv, json, os, sys, math, html, datetime
 
 SUBJECT = os.environ.get('FACEAGE_SUBJECT_LABEL', 'me')
 RESULTS = os.path.expanduser(os.environ.get(
     'FACEAGE_RESULTS', '~/FaceAgeData/subjects/%s/results' % SUBJECT))
 HISTORY = os.path.join(RESULTS, 'faceage_history.csv')
+NOTES   = os.path.join(RESULTS, 'session_notes.json')
 OUT     = os.path.join(RESULTS, 'tracker.html')
 
 LUMA_TOL = 5.0          # exposure drift beyond this makes a session suspect
@@ -42,6 +43,16 @@ def load():
                 continue
             n = int(num(r.get('n')) or 0)
             std = num(r.get('std'))
+            # parse run timestamp (stored as UTC) to local time
+            ts_raw = (r.get('run_timestamp') or '').strip()
+            try:
+                ts_dt = datetime.datetime.fromisoformat(ts_raw)
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=datetime.timezone.utc)
+                ts_local = ts_dt.astimezone()
+                run_time = ts_local.strftime('%-I:%M %p')
+            except (ValueError, TypeError):
+                run_time = ''
             rows.append({
                 'date': date, 'label': d, 'mean': mean, 'n': n, 'std': std,
                 'se': (std / math.sqrt(n)) if (std and n > 1) else 0.0,
@@ -49,9 +60,26 @@ def load():
                 'luma': num(r.get('mean_luma')),
                 'flagged': int(num(r.get('n_flagged')) or 0),
                 'failed': int(num(r.get('n_failed')) or 0),
+                'run_time': run_time,
+                'notes': (r.get('notes') or '').strip(),
             })
     if not rows:
         sys.exit("History has no usable dated sessions.")
+    # merge notes from sidecar (written by the web UI)
+    if os.path.exists(NOTES):
+        try:
+            with open(NOTES) as nf:
+                sidecar = json.load(nf)
+            merged = False
+            for r in rows:
+                if r['label'] in sidecar:
+                    r['notes'] = sidecar[r['label']]
+                    merged = True
+            if merged:
+                _write_notes_to_csv(sidecar)
+                os.remove(NOTES)
+        except (json.JSONDecodeError, OSError):
+            pass
     return sorted(rows, key=lambda r: r['date'])
 
 
@@ -177,14 +205,16 @@ def main():
         for t, v, s, cls in tiles)
 
     trows = ''.join(
-        '<tr%s><td>%s</td><td class="r">%.2f</td><td class="r">%s</td>'
+        '<tr%s><td>%s</td><td class="r">%s</td><td class="r">%.2f</td><td class="r">%s</td>'
         '<td class="r">%d</td><td class="r">%s</td><td class="r">%s</td>'
-        '<td class="r">%s</td></tr>'
-        % (' class="sus"' if r['_suspect'] else '', html.escape(r['label']), r['mean'],
+        '<td class="r">%s</td><td class="note" contenteditable data-session="%s">%s</td></tr>'
+        % (' class="sus"' if r['_suspect'] else '', html.escape(r['label']),
+           html.escape(r['run_time']), r['mean'],
            ('%.2f' % r['median']) if r['median'] is not None else '—', r['n'],
            ('%.2f' % r['std']) if r['std'] else '—',
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
-           ('%d' % r['flagged']) if r['flagged'] else '0')
+           ('%d' % r['flagged']) if r['flagged'] else '0',
+           html.escape(r['label'], quote=True), html.escape(r['notes']))
         for r in rows)
 
     notes = []
@@ -258,6 +288,12 @@ th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border)}
 th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);font-weight:600}
 td.r,th.r{text-align:right}
 tr.sus td:first-child::after{content:" ⚠";color:var(--warn)}
+td.note{color:var(--text-secondary);cursor:text;min-width:100px}
+td.note:empty::before{content:'add note…';color:var(--text-muted);font-style:italic}
+td.note:focus{outline:2px solid var(--series-1);outline-offset:-2px;border-radius:3px}
+#save-bar{display:none;position:fixed;bottom:0;left:0;right:0;
+  background:var(--series-1);color:#fff;text-align:center;padding:8px;
+  font-size:13px;font-weight:600;cursor:pointer;z-index:10}
 ul.notes{margin:18px 0 0;padding-left:18px;color:var(--text-secondary);font-size:13px}
 ul.notes li{margin-bottom:7px}
 #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;
@@ -284,14 +320,15 @@ ul.notes li{margin-bottom:7px}
 
 <div class="card" style="padding-bottom:10px">
   <h2>All sessions</h2>
-  <table><thead><tr><th>Session</th><th class="r">Mean</th><th class="r">Median</th>
+  <table><thead><tr><th>Session</th><th class="r">Time</th><th class="r">Mean</th><th class="r">Median</th>
   <th class="r">n</th><th class="r">SD</th><th class="r">Exposure</th>
-  <th class="r">Flagged</th></tr></thead><tbody>__ROWS__</tbody></table>
+  <th class="r">Flagged</th><th>Notes</th></tr></thead><tbody>__ROWS__</tbody></table>
 </div>
 
 <ul class="notes">__NOTES__</ul>
 </div>
 <div id="tip"></div>
+<div id="save-bar">Save notes</div>
 <script>
 var tip=document.getElementById('tip');
 document.querySelectorAll('.hit').forEach(function(el){
@@ -300,6 +337,27 @@ document.querySelectorAll('.hit').forEach(function(el){
   el.addEventListener('mousemove',function(e){
     tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-32)+'px';});
   el.addEventListener('mouseleave',function(){tip.style.opacity='0';});
+});
+/* --- editable notes --- */
+var dirty=false, bar=document.getElementById('save-bar');
+function gatherNotes(){
+  var m={};
+  document.querySelectorAll('td.note').forEach(function(td){
+    m[td.getAttribute('data-session')]=td.textContent.trim();});
+  return m;
+}
+document.querySelectorAll('td.note').forEach(function(td){
+  td.addEventListener('input',function(){dirty=true;bar.style.display='block';});
+  td.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){e.preventDefault();td.blur();}});
+});
+bar.addEventListener('click',function(){
+  var notes=gatherNotes();
+  var blob=new Blob([JSON.stringify(notes,null,2)],{type:'application/json'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='session_notes.json';a.click();URL.revokeObjectURL(a.href);
+  bar.textContent='Saved — drop session_notes.json next to tracker.html, then regenerate';
+  setTimeout(function(){bar.style.display='none';bar.textContent='Save notes';dirty=false;},3500);
 });
 </script>
 </body></html>"""
@@ -321,5 +379,41 @@ document.querySelectorAll('.hit').forEach(function(el){
     print(OUT)
 
 
+def _write_notes_to_csv(notes_dict):
+    """Merge a {session_date: note_text} dict into the history CSV."""
+    with open(HISTORY, newline='') as fh:
+        reader = csv.DictReader(fh)
+        fieldnames = list(reader.fieldnames)
+        rows = list(reader)
+    if 'notes' not in fieldnames:
+        fieldnames.append('notes')
+    for r in rows:
+        sd = (r.get('session_date') or '').strip()
+        if sd in notes_dict:
+            r['notes'] = notes_dict[sd]
+    with open(HISTORY, 'w', newline='') as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def set_note(session_date, note_text):
+    """Set or replace the note for a session in the history CSV."""
+    if not os.path.exists(HISTORY):
+        sys.exit("No history yet at %s" % HISTORY)
+    with open(HISTORY, newline='') as fh:
+        dates = [(r.get('session_date') or '').strip() for r in csv.DictReader(fh)]
+    if session_date not in dates:
+        sys.exit("No session '%s' in history. Available: %s" % (session_date, ', '.join(dates)))
+    _write_notes_to_csv({session_date: note_text})
+    print("Note for %s: %s" % (session_date, note_text if note_text else '(cleared)'))
+
+
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) >= 3 and sys.argv[1] == 'note':
+        session = sys.argv[2]
+        text = ' '.join(sys.argv[3:]) if len(sys.argv) > 3 else ''
+        set_note(session, text)
+        main()  # regenerate the tracker after editing
+    else:
+        main()
