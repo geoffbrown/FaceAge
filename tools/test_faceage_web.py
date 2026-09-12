@@ -550,6 +550,112 @@ class TestSessionResult(WebTestCase):
         self.assertIsNone(self.w.session_result('me', '2026-09-13'))
 
 
+class TestTakes(WebTestCase):
+    """A reshoot is a new take, not an overwrite. That is the forgiving path:
+    §1 stays intact because nothing already recorded is rewritten."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def test_labels_with_take_letters_are_valid(self):
+        for good in ('2026-09-12', '2026-09-12b', '2026-09-12z'):
+            self.assertEqual(self.w.safe_date(good), good)
+
+    def test_bad_take_letters_refused(self):
+        for bad in ('2026-09-12a', '2026-09-12B', '2026-09-12bb', '2026-09-12-b'):
+            with self.assertRaises(ValueError, msg=bad):
+                self.w.safe_date(bad)
+
+    def test_first_take_is_the_bare_date(self):
+        self.assertEqual(self.w.next_take('me', '2026-09-12'), '2026-09-12')
+
+    def test_next_take_skips_a_used_one(self):
+        os.makedirs(self.w.session_dir('me', '2026-09-12'))
+        self.assertEqual(self.w.next_take('me', '2026-09-12'), '2026-09-12b')
+
+    def test_next_take_skips_a_scored_one_without_a_folder(self):
+        self.history('me', '2026-09-12')
+        self.assertEqual(self.w.next_take('me', '2026-09-12'), '2026-09-12b')
+
+    def test_take_letter_ignored_when_asking_for_the_next(self):
+        os.makedirs(self.w.session_dir('me', '2026-09-12'))
+        os.makedirs(self.w.session_dir('me', '2026-09-12b'))
+        self.assertEqual(self.w.next_take('me', '2026-09-12b'), '2026-09-12c')
+
+    def test_reshoot_creates_the_folder(self):
+        os.makedirs(self.w.session_dir('me', '2026-09-12'))
+        r = self.w.do_reshoot({'person': 'me', 'date': '2026-09-12'})
+        self.assertEqual(r['session'], '2026-09-12b')
+        self.assertTrue(os.path.isdir(self.w.session_dir('me', '2026-09-12b')))
+
+    def test_a_take_has_its_own_checklist(self):
+        """The failed take keeps its failure; the reshoot answers fresh."""
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-12', 'answers': a})
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-12b',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.assertFalse(self.w.read_checklist('me', '2026-09-12')['valid'])
+        self.assertTrue(self.w.read_checklist('me', '2026-09-12b')['valid'])
+
+    def test_failed_take_stays_excluded_after_a_reshoot(self):
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-12', 'answers': a})
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-12b',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        vfile = os.path.join(self.w.results_dir('me'), 'session_validity.csv')
+        with open(vfile) as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual([r['session_date'] for r in rows], ['2026-09-12'])
+
+    def test_analysis_keys_takes_to_the_same_day(self):
+        """The pre-registered analysis parses date[:10], so a take sits on its
+        calendar day rather than being dropped."""
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import faceage_analysis as fa
+        import datetime as dt
+        hist = os.path.join(self.w.results_dir('me'), 'faceage_history.csv')
+        os.makedirs(os.path.dirname(hist), exist_ok=True)
+        with open(hist, 'w') as fh:
+            fh.write('session_date,run_timestamp,n,n_total_images,n_failed,'
+                     'n_flagged,mean,median,std,min,max,mean_luma,model_sha256,'
+                     'image_dir,notes\n')
+            fh.write('2026-09-12b,x,10,10,0,0,44.1,44.0,0.8,43,45,121,dd,x,\n')
+        rows, _ = fa.load_history(hist, {})
+        self.assertEqual(rows[0]['date'], dt.date(2026, 9, 12))
+        self.assertEqual(rows[0]['label'], '2026-09-12b')
+
+
+class TestPrefill(WebTestCase):
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def test_none_when_there_is_no_history(self):
+        self.assertIsNone(self.w.previous_checklist('me', '2026-09-13'))
+
+    def test_finds_the_most_recent_earlier_checklist(self):
+        for d in ('2026-09-11', '2026-09-12'):
+            self.w.do_checklist({'person': 'me', 'date': d,
+                                 'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        r = self.w.previous_checklist('me', '2026-09-13')
+        self.assertEqual(r['session_date'], '2026-09-12')
+
+    def test_ignores_later_sessions(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-20',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.assertIsNone(self.w.previous_checklist('me', '2026-09-13'))
+
+    def test_prefill_is_not_an_answer(self):
+        """Nothing is recorded by looking one up -- the user still submits."""
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-11',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.w.previous_checklist('me', '2026-09-13')
+        self.assertIsNone(self.w.read_checklist('me', '2026-09-13'))
+
+
 class TestProgress(WebTestCase):
     def test_parses_phase_and_position(self):
         p = self.w.parse_progress([
