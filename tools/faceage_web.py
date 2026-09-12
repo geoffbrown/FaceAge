@@ -316,8 +316,13 @@ def session_result(name, date):
         out['luma_delta'] = round(luma - base, 1)
         out['luma_ok'] = abs(luma - base) <= 5.0
     cl = read_checklist(name, date)
-    out['in_series'] = bool(cl is None or cl.get('valid', True))
-    out['excluded_reason'] = None if out['in_series'] else '; '.join(cl.get('failed') or [])
+    out['valid'] = bool(cl is None or cl.get('valid', True))
+    out['excluded_reason'] = None if out['valid'] else '; '.join(cl.get('failed') or [])
+    # Scored but no history row: a one-off. The number exists and can still be
+    # added, which is the point -- deciding before seeing it was a one-way door.
+    out['logged'] = session_scored(name, date)
+    out['in_series'] = out['logged'] and out['valid']
+    out['has_checklist'] = cl is not None
     return out
 
 
@@ -707,12 +712,30 @@ def do_score(body):
         raise ValueError('answer the session checklist before scoring — it has '
                          'to be decided without knowing the number (§1)')
 
+    promoting = bool(body.get('promote'))
+    if promoting:
+        # Adding an existing one-off result to the series. Logged, because it
+        # is a decision taken with the number already known -- allowed, but not
+        # silent.
+        res = results_dir(name)
+        os.makedirs(res, exist_ok=True)
+        log = os.path.join(res, 'promoted.csv')
+        new = not os.path.exists(log)
+        with open(log, 'a', newline='') as fh:
+            if new:
+                fh.write('session,promoted_at,mean_at_promotion\n')
+            prior = session_result(name, date) or {}
+            fh.write('%s,%s,%s\n' % (
+                date,
+                datetime.datetime.now().replace(microsecond=0).isoformat(),
+                prior.get('mean', '')))
+
     argv = [FACEAGE, 'run', date, '--subject', name]
     if oneoff:
         argv.append('--no-log')
-    JOB.start('Scoring %s — %s%s' % (name, date, ' (one-off)' if oneoff else ''),
-              argv)
-    return {'ok': True, 'started': True}
+    JOB.start('%s %s — %s' % ('Adding to series' if promoting else 'Scoring',
+                              name, date), argv)
+    return {'ok': True, 'started': True, 'promoting': promoting}
 
 
 def do_preflight(person, date):
@@ -916,6 +939,9 @@ pre.log{background:var(--s1);border:1px solid var(--bd);border-radius:7px;
   color:var(--t2);font-variant-numeric:tabular-nums}
 .rmeta .bad{color:var(--er)}
 .oneoff{display:block;margin-top:10px;font-size:12.5px;color:var(--t2)}
+.notlogged{margin-top:10px;padding:11px 13px;border-radius:8px;
+  border:1px dashed var(--bd);background:var(--s2);font-size:13px}
+.inseries{margin-top:9px;color:var(--ok);font-weight:600;font-size:13px}
 .done{margin-top:9px;font-weight:600;font-size:13px}
 .done.good{color:var(--ok)} .done.bad{color:var(--er)}
 details summary{cursor:pointer;font-size:12.5px;margin-top:8px}
@@ -1133,8 +1159,8 @@ function render(){
            (S.oneoff?' checked':'')+'> Just tell me the number \u2014 do not add '+
            'this to the series</label>');
     o.push('<div class="note">'+(S.oneoff
-        ? 'Nothing will be written to the series or the chart. Use this to see '+
-          'what a set scores without committing it.'
+        ? 'Nothing is written to the series. You will still see the number, and '+
+          'you can add it afterwards \u2014 this is not a one-way door.'
         : 'This writes a row to the series and it appears on the chart. Whether '+
           'the pre-registered analysis counts it is decided by the checklist, '+
           'before the number exists \u2014 not afterwards.')+'</div>');
@@ -1155,10 +1181,24 @@ function render(){
         o.push('<span class="'+(R.luma_ok===false?'bad':'')+'">'+lt+'</span>');
       }
       o.push('</div>');
-      if(!R.in_series)
+      if(!R.logged){
+        o.push('<div class="notlogged">');
+        o.push('<div><b>Not in the series.</b> This was a one-off \u2014 nothing '+
+               'was written to the tracker.</div>');
+        if(R.has_checklist)
+          o.push('<button class="primary" style="margin-top:9px" onclick="promote()">'+
+                 'Add this session to the series</button>');
+        else
+          o.push('<div class="muted" style="margin-top:7px">Answer the checklist '+
+                 'above first \u2014 a session joins the series with its validity '+
+                 'recorded, not without it.</div>');
+        o.push('</div>');
+      } else if(!R.valid)
         o.push('<div class="warn" style="margin:9px 0 0">Recorded as a protocol '+
                'failure, so this number is <b>not in the series</b> and is excluded '+
                'from the analysis'+(R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
+      else
+        o.push('<div class="inseries">\u2713 In the series</div>');
       if(R.fellback)
         o.push('<div class="warn" style="margin:9px 0 0">Every photo carried a QA '+
                'advisory, so the mean uses all scored photos. Check the capture '+
@@ -1258,6 +1298,11 @@ function discard(){
       S.discardNote = j.session + ' \u2014 ' + j.removed.join(', ');
       load();
     }).catch(function(e){ err(e.message); });
+}
+
+function promote(){
+  api('/api/score', {person:S.person, date:S.date, oneoff:false, promote:true})
+    .then(function(){ poll(); }).catch(function(e){ err(e.message); });
 }
 
 function reshoot(){
