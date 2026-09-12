@@ -1299,12 +1299,13 @@ class TestBaselinePerCamera(WebTestCase):
     def test_mac_baseline_carries_its_live_readings(self):
         for i in (1, 2):
             self.w.do_capture({'person': 'me', 'date': '2026-09-12', 'batch': '20260912-101500',
-                               'index': i, 'image': data_url(), 'settings': {},
+                               'index': i, 'image': data_url(), 'settings': {'luma_method': 'box-rgb-2'},
                                'frame': {'luma': 100.0 + i}})
         self.history('me', '2026-09-12', luma=173.3)
         b = self.w.baseline_info('me', 'mac-camera')
         self.assertEqual(b['luma'], 173.3, 'the pipeline number stays the study baseline')
         self.assertEqual(b['live_luma'], 101.5, 'the live readout compares to what it said then')
+        self.assertEqual(b['live_method'], 'box-rgb-2', 'and only against readings taken the same way')
         self.assertNotIn('live_luma', self.w.baseline_info('me', 'import') or {})
 
     def test_camera_step_gets_the_mac_baseline_before_any_frame_exists(self):

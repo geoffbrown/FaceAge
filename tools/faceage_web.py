@@ -190,6 +190,7 @@ def baseline_info(name, source=None):
             lumas = [f.get('luma') for f in m.get('frames', []) if isinstance(f.get('luma'), (int, float))]
             if lumas:
                 info['live_luma'] = round(sum(lumas) / len(lumas), 1)
+                info['live_method'] = (m.get('settings') or {}).get('luma_method')
         return info
     return None
 
@@ -684,7 +685,7 @@ def do_capture(body):
     settings = body.get('settings') if isinstance(body.get('settings'), dict) else {}
     keep = {k: settings.get(k) for k in ('camera', 'width', 'height', 'frame_rate',
                                           'device_id', 'mirrored', 'quality', 'crop',
-                                          'saved_width', 'saved_height', 'guide',
+                                          'saved_width', 'saved_height', 'guide', 'luma_method', 'exposure',
                                           'user_agent') if settings.get(k) is not None}
     frame = body.get('frame') if isinstance(body.get('frame'), dict) else {}
     doc = capture_manifest(name, date) or {
@@ -1463,6 +1464,7 @@ select{padding-right:32px}
 .camstats b{color:var(--ink);font-weight:600}
 .camstats .good{color:var(--good)} .camstats .good b{color:var(--good)}
 .camstats .bad{color:var(--bad)} .camstats .bad b{color:var(--bad)}
+.camstats .near{color:var(--warn)} .camstats .near b{color:var(--warn)}
 .camgo{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:14px}
 .camgo button.big{padding:14px 28px;font-size:16px;border-radius:12px}
 .camstats .dim{color:var(--ink3)}
@@ -1807,7 +1809,10 @@ var PICO_TO_BOX = 1.12;
    so a box centred in the frame reads as a detection centre near 0.44. */
 /* fillMin carries margin above the pipeline bar of 80%: a live estimate is
    not the measurement, and a frame under the bar is a frame set aside. */
-var TARGET = {fillMin:0.76, fillMax:0.86, cy:0.44, tolX:0.06, tolY:0.07, lumaTol:5};
+var TARGET = {fillMin:0.76, fillMax:0.86, cy:0.44, tolX:0.06, tolY:0.07, lumaTol:5, lumaBlock:12, lumaLow:60, lumaHigh:215};
+/* How the live brightness is measured. Bump this whenever the measure changes:
+   a reading only ever compares against a baseline reading taken the same way. */
+var LUMA_METHOD = 'box-rgb-2';
 var CAM = {stream:null, starting:false, running:false, luma:null, w:0, h:0, fps:null, id:'', label:'',
            raf:null, face:null, posOk:false, lumaOk:true, aligned:false, alignedSince:0, guide:'',
            armed:true, muted:false, classify:null, mem:null, guideErr:null, gray:null, lastFrame:0};
@@ -1837,15 +1842,17 @@ function liveBase(){
      in, with a looser tolerance because the two are not the same measure. */
   var b = S.baseline_camera;
   if(!b) return null;
-  if(b.live_luma!=null) return {value:b.live_luma, tol:TARGET.lumaTol, live:true};
-  if(b.luma!=null) return {value:b.luma, tol:10, live:false};
-  return null;
+  if(b.live_luma!=null && b.live_method === LUMA_METHOD) return {value:b.live_luma, tol:TARGET.lumaTol, live:true};
+  return null;                       // a differently measured number is not a baseline for this readout
 }
 function baselineLine(){
   var b = S.baseline_camera, lb = liveBase();
   if(lb)
-    return 'Brightness baseline for this camera: <b>'+Math.round(lb.value)+'</b>, set '+h(niceDate(b.date))+'.'+
-           (lb.live ? '' : ' Measured differently at the time, so the match is approximate.');
+    return 'Brightness baseline for this camera: <b>'+Math.round(lb.value)+'</b>, set '+h(niceDate(b.date))+'. '+
+           'The camera sets its own exposure, so this is about keeping the lamp and room the same, not making it brighter.';
+  if(b && b.luma!=null)
+    return 'Your baseline session was measured before this readout existed, so today is not checked against it live. '+
+           'Match the lamp and room to that day; the analysis compares afterwards.';
   return 'No brightness baseline for this camera yet. This session sets it, so get the light how you want it and keep it that way.';
 }
 
@@ -1944,6 +1951,7 @@ function camStart(){
       CAM.starting = false; CAM.stream = stream;
       var t = stream.getVideoTracks()[0], st = (t && t.getSettings) ? t.getSettings() : {};
       CAM.label = (t && t.label) || ''; CAM.w = st.width||0; CAM.h = st.height||0; CAM.fps = st.frameRate||null; CAM.id = st.deviceId||'';
+      lockExposure(t);
       camAttach(); camLoop();
     })
     .catch(function(e){
@@ -1953,6 +1961,32 @@ function camStart(){
                     'Could not start the camera: '+(e && e.message ? e.message : e);
       render();
     });
+}
+/* Ask the camera to hold its exposure and white balance where they are, if
+   the browser lets us. Safari does not, and Chrome on a Mac usually reports
+   no manual mode for the built-in camera, so this is best effort: what it
+   managed is shown on screen and recorded with the session. Consistency of
+   the scene (lamp, room, background) is what actually keeps auto-exposure
+   landing in the same place. */
+function lockExposure(track){
+  CAM.exposure = '';
+  try {
+    if(!track || !track.getCapabilities) return;
+    var cap = track.getCapabilities() || {}, st = track.getSettings ? track.getSettings() : {};
+    var want = [];
+    if(cap.exposureMode && cap.exposureMode.indexOf('manual') >= 0){
+      var c = {exposureMode:'manual'};
+      if(st.exposureTime) c.exposureTime = st.exposureTime;
+      want.push(c);
+    }
+    if(cap.whiteBalanceMode && cap.whiteBalanceMode.indexOf('manual') >= 0) want.push({whiteBalanceMode:'manual'});
+    if(!want.length){ CAM.exposure = 'auto exposure (camera will not lock)'; return; }
+    setTimeout(function(){                                   // let auto-exposure settle on the scene first
+      track.applyConstraints({advanced:want})
+        .then(function(){ var s2 = track.getSettings(); CAM.exposure = (s2.exposureMode==='manual' ? 'exposure locked' : 'auto exposure'); })
+        .catch(function(){ CAM.exposure = 'auto exposure (lock refused)'; });
+    }, 1500);
+  } catch(e){ CAM.exposure = ''; }
 }
 function loadGuide(){
   if(CAM.classify || CAM.guideErr || typeof pico === 'undefined' || typeof fetch !== 'function') { if(typeof pico === 'undefined') CAM.guideErr = 'face guide not loaded'; return; }
@@ -2059,17 +2093,21 @@ function detect(v, R){
 function guidance(){
   var f = CAM.face, msg, state, wasAligned = CAM.aligned;
   var lb = liveBase(), base = lb ? lb.value : null;
-  var L = CAM.luma, lumaMsg = '', lumaCls = '';
+  var L = CAM.luma, lumaMsg = '', lumaCls = '', lumaNote = '';
+  /* Brightness blocks the green frame only when it is clipped or far from the
+     baseline reading. The camera auto-exposes, so a stronger lamp does not
+     raise this number much; what moves it is the lamp position, the room, and
+     the camera settling. Small differences get a note, not a stop. */
   if(L!=null){
-    if(base!=null){
-      var dl = L - base;
-      CAM.lumaOk = Math.abs(dl) <= lb.tol;
-      lumaCls = CAM.lumaOk ? 'good' : 'bad';
-      lumaMsg = CAM.lumaOk ? '' : (dl>0 ? 'a bit bright: dim the lamp or move it back' : 'a bit dark: bring the lamp closer or turn it up');
-    } else {
-      CAM.lumaOk = L >= 70 && L <= 190;
-      lumaCls = CAM.lumaOk ? '' : 'bad';
-      lumaMsg = CAM.lumaOk ? '' : (L < 70 ? 'dark: put more light on your face' : 'very bright: dim it');
+    CAM.lumaOk = true;
+    if(L < TARGET.lumaLow){ CAM.lumaOk = false; lumaCls = 'bad'; lumaMsg = 'too dark for the camera: more light on your face'; }
+    else if(L > TARGET.lumaHigh){ CAM.lumaOk = false; lumaCls = 'bad'; lumaMsg = 'washed out: move the lamp back or off to the side'; }
+    else if(base!=null){
+      var dl = L - base, ad = Math.abs(dl);
+      if(ad <= lb.tol){ lumaCls = 'good'; }
+      else if(ad <= TARGET.lumaBlock){ lumaCls = 'near'; lumaNote = (dl>0 ? 'a little brighter' : 'a little darker')+' than your baseline. Fine to shoot; if the lamp or room moved, put it back.'; }
+      else { CAM.lumaOk = false; lumaCls = 'bad';
+             lumaMsg = (dl>0 ? 'much brighter' : 'much darker')+' than your baseline ('+Math.round(base)+'). Same lamp, same spot, same room light as that day, then give the camera a second to settle'; }
     }
   }
   if(!f){
@@ -2085,6 +2123,7 @@ function guidance(){
     CAM.posOk = !fixes.length;
     if(fixes.length){ state = 'near'; msg = fixes[0]; }
     else if(!CAM.lumaOk){ state = 'ok'; msg = 'Position is good. Light is '+lumaMsg+'.'; }
+    else if(lumaNote && !CAM.running){ state = 'ok'; msg = (CAM.armed ? 'Hold still. ' : '')+'Light is '+lumaNote; }
     else { state = 'ok'; msg = CAM.running ? msg : (CAM.armed ? 'Perfect. Hold still…' : 'Perfect. Press Start.'); }
   }
   CAM.aligned = CAM.posOk && CAM.lumaOk;
@@ -2099,7 +2138,8 @@ function guidance(){
   if(el){
     el.className = lumaCls;
     el.innerHTML = L==null ? '' : 'brightness on your face <b>'+Math.round(L)+'</b>'+
-      (base!=null ? ' · baseline '+Math.round(base)+(CAM.lumaOk?' ✓':'') : '');
+      (base!=null ? ' · baseline '+Math.round(base)+(lumaCls==='good'?' ✓':'') : '')+
+      (CAM.exposure ? ' · '+CAM.exposure : '');
   }
   var fe = document.getElementById('camfill');
   if(fe) fe.innerHTML = f ? 'face <b>'+Math.round(f.s*PICO_TO_BOX*100)+'%</b> of frame height'
@@ -2140,7 +2180,8 @@ function startCapture(){
   var batch = stamp(), saved = 0, n = COUNTDOWN, R = cropRect();
   var settings = {camera:CAM.label, width:CAM.w, height:CAM.h, frame_rate:CAM.fps, device_id:CAM.id,
                   mirrored:false, quality:0.95, crop:{x:R.x, y:R.y, w:R.w, h:R.h, height_frac:CROP.h, aspect:CROP.aspect},
-                  saved_width:R.w, saved_height:R.h, guide:CAM.classify ? 'pico' : 'none',
+                  saved_width:R.w, saved_height:R.h, guide:CAM.classify ? 'pico' : 'none', luma_method:LUMA_METHOD,
+                  exposure:CAM.exposure || 'auto',
                   user_agent:(typeof navigator!=='undefined'&&navigator.userAgent)||''};
   function finish(err){
     CAM.running = false; camCount('');
