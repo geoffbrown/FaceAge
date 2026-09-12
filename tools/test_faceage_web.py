@@ -917,6 +917,157 @@ class TestCapture(WebTestCase):
     def test_route_is_registered(self):
         self.assertIs(self.w.ROUTES_POST['/api/capture'], self.w.do_capture)
 
+    def test_frame_metrics_recorded(self):
+        r = self.frame(1, frame={'luma': 117.2, 'fill': 0.86, 'dx': -0.01,
+                                 'dy': 0.02, 'aligned': True},
+                       settings={'camera': 'FaceTime HD', 'width': 1920, 'height': 1080,
+                                 'crop': {'x': 300, 'y': 180, 'w': 540, 'h': 720},
+                                 'saved_width': 540, 'saved_height': 720, 'guide': 'pico'})
+        m = self.w.capture_manifest('me', '2026-09-13')
+        f = m['frames'][0]
+        self.assertEqual((f['luma'], f['fill'], f['aligned']), (117.2, 0.86, True))
+        self.assertEqual(m['settings']['crop']['h'], 720)
+        self.assertEqual(m['settings']['guide'], 'pico')
+
+    def test_static_files_exist_and_are_whitelisted(self):
+        for name, ctype in self.w.STATIC.items():
+            path = os.path.join(self.w.WEB_DIR, name)
+            self.assertTrue(os.path.isfile(path), path)
+        self.assertNotIn('..', ''.join(self.w.STATIC))
+        self.assertTrue(os.path.isfile(os.path.join(self.w.WEB_DIR, 'LICENSE-pico')),
+                        'vendored code ships with its license')
+
+
+class TestRemoveFromTracker(WebTestCase):
+    """A row can leave the tracker without the session leaving the disk, and
+    the removal is logged. The session then reads as scored-but-not-logged, so
+    it can be added back."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-10', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-10')
+        with open(os.path.join(self.w.results_dir('me'), '2026-09-10_summary.json'), 'w') as fh:
+            json.dump({'mean': 44.1, 'n': 10, 'luma': 121.3}, fh)
+
+    def test_row_goes_everything_else_stays(self):
+        self.history('me', '2026-09-11')
+        r = self.w.do_remove({'person': 'me', 'date': '2026-09-10', 'reason': 'wrong lamp'})
+        self.assertEqual(r['remaining'], 1)
+        self.assertFalse(self.w.session_scored('me', '2026-09-10'))
+        self.assertTrue(self.w.session_scored('me', '2026-09-11'))
+        self.assertEqual(self.w.staged('me', '2026-09-10'), ['IMG_1.jpg'])
+        res = self.w.session_result('me', '2026-09-10')
+        self.assertEqual(res['mean'], 44.1)
+        self.assertFalse(res['logged'], 'can be added back')
+
+    def test_logged_with_reason(self):
+        self.w.do_remove({'person': 'me', 'date': '2026-09-10', 'reason': 'wrong, lamp'})
+        with open(os.path.join(self.w.results_dir('me'), 'removed.csv')) as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(rows[0]['session'], '2026-09-10')
+        self.assertEqual(rows[0]['reason'], 'wrong; lamp')
+        self.assertEqual(rows[0]['after_baseline_anchor'], 'no')
+        self.assertEqual(rows[0]['mean'], '44.1')
+
+    def test_after_anchor_is_flagged_not_refused(self):
+        self.history('me', '2026-09-11')
+        with open(os.path.join(self.w.results_dir('me'), 'anchors.csv'), 'w') as fh:
+            fh.write('anchor,date,note\nB,2026-09-11,first Mac session\n')
+        r = self.w.do_remove({'person': 'me', 'date': '2026-09-11', 'reason': ''})
+        self.assertTrue(r['after_baseline_anchor'])
+        with open(os.path.join(self.w.results_dir('me'), 'removed.csv')) as fh:
+            self.assertIn(',yes,(none given)', fh.read())
+
+    def test_not_in_tracker_refused(self):
+        with self.assertRaises(ValueError):
+            self.w.do_remove({'person': 'me', 'date': '2026-09-12', 'reason': ''})
+
+    def test_route_is_registered(self):
+        self.assertIs(self.w.ROUTES_POST['/api/remove'], self.w.do_remove)
+
+    def test_tracker_names_the_camera_and_offers_remove(self):
+        import base64
+        self.w.do_capture({'person': 'me', 'date': '2026-09-11', 'batch': '20260911-101500',
+                           'index': 1, 'image': data_url(), 'settings': {}})
+        self.history('me', '2026-09-11')
+        out = self.w.build_chart('me')
+        with open(out) as fh:
+            page = fh.read()
+        self.assertIn('<th>Camera</th>', page)
+        self.assertIn('<td>2026-09-10</td><td>Phone</td>', page)
+        self.assertIn('<td>2026-09-11</td><td>Mac</td>', page)
+        self.assertIn('more than one camera', page)
+        self.assertIn('data-session="2026-09-11" title="Remove', page)
+        self.assertIn("'/api/remove'", page)
+
+
+class TestBaselinePerCamera(WebTestCase):
+    """The exposure baseline is the first logged session's face brightness.
+    That number only means something against the same camera, so a session
+    is held to the first logged session shot the same way it was."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def imported(self, date, luma):
+        self.put_inbox('IMG_%s.jpg' % date)
+        self.w.do_import({'person': 'me', 'date': date, 'files': ['IMG_%s.jpg' % date]})
+        self.history('me', date, luma=luma)
+
+    def captured(self, date, luma):
+        import base64
+        self.w.do_capture({'person': 'me', 'date': date, 'batch': '20260913-101500',
+                           'index': 1, 'image': data_url(), 'settings': {}})
+        self.history('me', date, luma=luma)
+
+    def test_no_history_no_baseline(self):
+        self.assertIsNone(self.w.baseline_info('me'))
+        self.assertIsNone(self.w.baseline_luma('me', 'mac-camera'))
+
+    def test_without_a_source_it_is_the_first_session(self):
+        self.imported('2026-09-09', 128.6)
+        self.captured('2026-09-12', 119.0)
+        b = self.w.baseline_info('me')
+        self.assertEqual((b['luma'], b['date'], b['source']), (128.6, '2026-09-09', 'import'))
+
+    def test_mac_session_is_not_held_to_a_phone_baseline(self):
+        self.imported('2026-09-09', 128.6)
+        self.assertIsNone(self.w.baseline_info('me', 'mac-camera'))
+        self.captured('2026-09-12', 119.0)
+        b = self.w.baseline_info('me', 'mac-camera')
+        self.assertEqual((b['luma'], b['date']), (119.0, '2026-09-12'))
+        self.assertEqual(self.w.baseline_luma('me', 'import'), 128.6)
+
+    def test_first_by_date_not_by_row_order(self):
+        self.imported('2026-09-11', 130.0)
+        self.imported('2026-09-09', 128.6)      # appended later, earlier date
+        self.assertEqual(self.w.baseline_info('me', 'import')['date'], '2026-09-09')
+
+    def test_state_carries_the_baseline_for_this_camera(self):
+        self.imported('2026-09-09', 128.6)
+        self.w.do_capture({'person': 'me', 'date': '2026-09-13', 'batch': '20260913-101500',
+                           'index': 1, 'image': data_url(), 'settings': {}})
+        st = self.w.state('me', '2026-09-13')
+        self.assertIsNone(st['baseline'], 'a Mac session has no phone baseline')
+        self.assertIsNone(st['baseline_luma'])
+        st = self.w.state('me', '2026-09-09')
+        self.assertEqual(st['baseline']['luma'], 128.6)
+
+    def test_session_result_compares_like_with_like(self):
+        self.imported('2026-09-09', 128.6)
+        self.captured('2026-09-12', 119.0)
+        self.captured('2026-09-13', 121.0)
+        with open(os.path.join(self.w.results_dir('me'), '2026-09-13_summary.json'), 'w') as fh:
+            json.dump({'mean': 44.0, 'n': 10, 'luma': 121.0}, fh)
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertEqual(r['baseline_luma'], 119.0)
+        self.assertEqual(r['luma_delta'], 2.0)
+        self.assertTrue(r['luma_ok'])
+
 
 class TestDiscard(WebTestCase):
     """Deleting the photos left every other trace behind, because the summary,

@@ -27,12 +27,32 @@ But it is a gap *between* two instruments, not noise *within* one. The series is
 trend line (`docs/PREREGISTRATION.md` §7): any camera that is fixed in place and never
 changed contributes a constant offset, and a constant offset cannot move a slope.
 
-So the web app now offers the Mac's built-in camera as an **option beside import**, with a
-live framing overlay (face oval at 85% of frame height, eye line, centre line), a
-brightness readout against the person's baseline, and an automated countdown-and-ten-shot
-capture that writes full-size, unmirrored JPEGs straight into the session folder together
-with a `capture.json` recording the camera, resolution and per-frame brightness. A Mac on a
-desk is easier to keep fixed than a propped phone, and it removes the AirDrop step.
+So the web app now offers the Mac's built-in camera as an **option beside import**. The
+camera step runs a live face detector in the page (pico.js, vendored under `tools/web/`,
+MIT) and turns that into plain guidance: *come closer*, *move a little to your left*,
+*sit a little lower*, *a bit dark: bring the lamp closer*. The frame turns green and
+chimes when the face box is 80–94% of the saved frame height, centred, and the brightness
+on the face is within ±5 of that camera's baseline; held for 1.5 s it starts the 3-2-1
+countdown and ten shots on its own (a checkbox turns auto-start off; Start always works).
+The countdown aborts if the face leaves position. Each shot waits briefly for the face to
+settle and records fill, offset and brightness alongside the frame in `capture.json`.
+
+The saved photo is a **fixed centre crop** of the sensor: two thirds of its height, 3:4
+portrait, copied 1:1 and unmirrored. That is what the pipeline measures (`face_fill` is
+against the saved frame), and fixing it keeps distance comparable between sessions while
+letting the person sit at desk distance rather than leaning into a wide lens. The crop is
+recorded in the manifest. A Mac on a desk is easier to keep fixed than a propped phone, and
+it removes the AirDrop step.
+
+The exposure baseline is per camera: the first logged session shot on that camera. A phone
+baseline says nothing about how bright the Mac's camera should read, so a Mac session is
+never held to one; its first logged session sets the Mac baseline instead.
+
+The tracker names the camera per session (from `capture.json`; a session without one was
+imported, i.e. the phone) and notes when a series mixes cameras. A session can be removed
+from the tracker there or from the app: only the history row goes, the photos and result
+stay on disk so it can be added back, and the removal is logged with its reason in
+`removed.csv` (flagged when it falls on or after the baseline anchor B).
 
 The rule that survives is **one camera for the whole series, never switched**. The app
 records which camera produced each session and warns before a session from a different

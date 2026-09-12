@@ -81,6 +81,7 @@ def load():
                 'failed': int(num(r.get('n_failed')) or 0),
                 'run_time': run_time(r.get('run_timestamp')),
                 'notes': (r.get('notes') or '').strip(),
+                'camera': camera_of(d, r.get('image_dir')),
             }
             ok, reason = validity.get(d, (True, ''))
             if ok:
@@ -110,6 +111,32 @@ def load():
             pass
     return (sorted(rows, key=lambda r: r['date']),
             sorted(excluded, key=lambda r: r['date']))
+
+
+def camera_of(label, image_dir=None):
+    """Which camera a session was shot on.
+
+    The app writes capture.json beside photos it took with the Mac's camera;
+    a session without one was imported, which for this study means the phone.
+    Sessions on different cameras are different instruments and are not
+    comparable, so the table says which is which.
+    """
+    candidates = []
+    if image_dir:
+        candidates.append(os.path.expanduser(image_dir))
+    candidates.append(os.path.join(os.path.dirname(RESULTS), 'sessions', label))
+    for d in candidates:
+        p = os.path.join(d, 'capture.json')
+        if os.path.exists(p):
+            try:
+                with open(p) as fh:
+                    src = json.load(fh).get('source')
+            except (OSError, ValueError):
+                src = None
+            return 'Mac' if src == 'mac-camera' else 'Mac?'
+        if os.path.isdir(d):
+            return 'Phone'
+    return ''
 
 
 def scale(rows, key, lo_key=None, hi_key=None, pad_frac=0.18, band=None):
@@ -320,31 +347,47 @@ def main():
         '<div class="ts">%s</div></div>' % (html.escape(t), cls, html.escape(v), html.escape(s))
         for t, v, s, cls in tiles)
 
+    notes = []
     trows = ''.join(
-        '<tr%s><td>%s</td><td class="r">%s</td><td class="r">%.2f</td><td class="r">%s</td>'
+        '<tr%s><td>%s</td><td>%s</td><td class="r">%s</td><td class="r">%.2f</td><td class="r">%s</td>'
         '<td class="r">%d</td><td class="r">%s</td><td class="r">%s</td>'
-        '<td class="r">%s</td><td class="note" contenteditable data-session="%s">%s</td></tr>'
+        '<td class="r">%s</td><td class="note" contenteditable data-session="%s">%s</td>'
+        '<td class="rm"><button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
         % (' class="sus"' if r['_suspect'] else '', html.escape(r['label']),
+           html.escape(r.get('camera') or ''),
            html.escape(r['run_time']), r['mean'],
            ('%.2f' % r['median']) if r['median'] is not None else '—', r['n'],
            ('%.2f' % r['std']) if r['std'] else '—',
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
            ('%d' % r['flagged']) if r['flagged'] else '0',
-           html.escape(r['label'], quote=True), html.escape(r['notes']))
+           html.escape(r['label'], quote=True), html.escape(r['notes']),
+           html.escape(r['label'], quote=True))
         for r in rows)
-    # Same nine columns as the rows above, or the table misaligns.
+    # Same eleven columns as the rows above, or the table misaligns.
     trows += ''.join(
-        '<tr class="exc"><td>%s</td><td class="r">%s</td><td class="r">%.2f</td>'
+        '<tr class="exc"><td>%s</td><td>%s</td><td class="r">%s</td><td class="r">%.2f</td>'
         '<td class="r">—</td><td class="r">%d</td><td class="r">—</td>'
         '<td class="r">%s</td><td class="r" title="%s">excluded</td>'
-        '<td class="note" contenteditable data-session="%s">%s</td></tr>'
-        % (html.escape(r['label']), html.escape(r['run_time']), r['mean'], r['n'],
+        '<td class="note" contenteditable data-session="%s">%s</td>'
+        '<td class="rm"><button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
+        % (html.escape(r['label']), html.escape(r.get('camera') or ''),
+           html.escape(r['run_time']), r['mean'], r['n'],
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
            html.escape(r.get('reason') or '', quote=True),
-           html.escape(r['label'], quote=True), html.escape(r['notes']))
+           html.escape(r['label'], quote=True), html.escape(r['notes']),
+           html.escape(r['label'], quote=True))
         for r in excluded)
 
-    notes = []
+    cameras = sorted({r['camera'] for r in rows + excluded if r.get('camera')})
+    if len(cameras) > 1:
+        notes.append('Sessions were shot on more than one camera (%s). Numbers from '
+                     'different cameras are not comparable: a Mac session and a phone '
+                     'session differ by the camera before they differ by the face. '
+                     'Keep one camera for the series.'
+                     % ', '.join('%s: %s' % (c, ', '.join(r['label'] for r in rows + excluded
+                                                            if r.get('camera') == c))
+                                 for c in cameras))
+
     if excluded:
         notes.append('%d session(s) recorded as protocol failures and excluded '
                      'from every statistic on this page (§1): %s. They are shown '
@@ -449,6 +492,10 @@ tr.sus td:first-child::after{content:" ⚠";color:var(--warn)}
 td.note{color:var(--text-secondary);cursor:text;min-width:100px}
 td.note:empty::before{content:'add note…';color:var(--text-muted);font-style:italic}
 td.note:focus{outline:2px solid var(--series-1);outline-offset:-2px;border-radius:3px}
+td.rm{text-align:right;white-space:nowrap}
+button.rm{all:unset;cursor:pointer;color:var(--text-muted);font-size:12px}
+button.rm:hover{color:var(--warn);text-decoration:underline}
+body.file button.rm{display:none}
 #save-bar{display:none;position:fixed;bottom:0;left:0;right:0;
   background:var(--series-1);color:#fff;text-align:center;padding:8px;
   font-size:13px;font-weight:600;cursor:pointer;z-index:10}
@@ -480,9 +527,9 @@ ul.notes li{margin-bottom:7px}
 
 <div class="card" style="padding-bottom:10px">
   <h2>All sessions</h2>
-  <table><thead><tr><th>Session</th><th class="r">Time</th><th class="r">Mean</th><th class="r">Median</th>
+  <table><thead><tr><th>Session</th><th>Camera</th><th class="r">Time</th><th class="r">Mean</th><th class="r">Median</th>
   <th class="r">n</th><th class="r">SD</th><th class="r">Exposure</th>
-  <th class="r">Flagged</th><th>Notes</th></tr></thead><tbody>__ROWS__</tbody></table>
+  <th class="r">Flagged</th><th>Notes</th><th></th></tr></thead><tbody>__ROWS__</tbody></table>
 </div>
 
 <ul class="notes">__NOTES__</ul>
@@ -497,6 +544,23 @@ document.querySelectorAll('.hit').forEach(function(el){
   el.addEventListener('mousemove',function(e){
     tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-32)+'px';});
   el.addEventListener('mouseleave',function(){tip.style.opacity='0';});
+});
+/* --- remove a session from the tracker (served by `faceage app` only) --- */
+if(!(location.protocol==='http:'||location.protocol==='https:')) document.body.className='file';
+document.querySelectorAll('button.rm').forEach(function(b){
+  b.addEventListener('click',function(){
+    var d=b.getAttribute('data-session');
+    if(!confirm('Remove '+d+' from the tracker?\n\nThe row leaves the history and the chart. The photos, '+
+                'checklist and result stay on disk, and the removal is logged with your reason, '+
+                'so the session can be added back later.')) return;
+    var reason=prompt('Why? (kept in the log)','')||'';
+    fetch('/api/remove',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({person:'__SUBJ__',date:d,reason:reason})})
+      .then(function(r){return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+        location.reload();});})
+      .catch(function(e){ alert('Could not remove: '+e.message); });
+  });
 });
 /* --- editable notes --- */
 var dirty=false, bar=document.getElementById('save-bar');
