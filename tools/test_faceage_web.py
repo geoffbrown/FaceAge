@@ -229,6 +229,84 @@ class TestChecklistOrdering(WebTestCase):
             self.w.do_score({'person': 'me', 'date': '2026-09-20'})
 
 
+class TestPageJavaScript(WebTestCase):
+    """The page is built from a Python string, so a `\\n` written as `\\\\n`
+    becomes a REAL newline inside a JS string literal. That does not fail
+    loudly: the whole script stops parsing, no code runs, and the page renders
+    its static header over an empty body — which looks like a server problem
+    and is not. It shipped once; these tests are why it cannot again."""
+
+    def script(self):
+        import re
+        m = re.search(r'<script>(.*?)</script>', self.w.PAGE, re.S)
+        self.assertIsNotNone(m, 'no script block in PAGE')
+        return m.group(1)
+
+    @staticmethod
+    def _strip_regex_literals(line):
+        """Drop /.../flags literals so their contents are not counted as quotes.
+
+        Heuristic, not a JS lexer: a `/` only starts a regex where a value
+        cannot already have ended, i.e. after ( , = : [ ! & | ? { ; return.
+        That covers this file and errs toward leaving text in place, which
+        would fail loudly rather than silently pass.
+        """
+        import re as _re
+        return _re.sub(r'(?<=[(,=:\[!&|?{;])\s*/(?:\\.|\[[^\]]*\]|[^/\n\\])+/[gimsuy]*',
+                       ' RE ', line)
+
+    def test_no_unterminated_string_literals(self):
+        """A literal newline inside a quoted string leaves the line ending
+        while still inside that string. Single pass, tracking which quote
+        opened, so a nested other-quote (like "'") is not miscounted."""
+        for i, line in enumerate(self.script().split('\n'), 1):
+            code = self._strip_regex_literals(line)
+            quote = None
+            esc = False
+            for ch in code:
+                if esc:
+                    esc = False
+                    continue
+                if ch == '\\':
+                    esc = True
+                elif quote is None and ch in ('"', "'"):
+                    quote = ch
+                elif quote is not None and ch == quote:
+                    quote = None
+                elif quote is None and ch == '/' and code[code.index(ch):].startswith('//'):
+                    break
+            self.assertIsNone(
+                quote,
+                'line %d ends inside a %s string -- a raw newline in a JS '
+                'literal breaks the whole script: %s'
+                % (i, quote, line.strip()[:90]))
+
+    def test_brackets_balance(self):
+        js = self.script()
+        for o, c in (('{', '}'), ('(', ')'), ('[', ']')):
+            self.assertEqual(js.count(o), js.count(c),
+                             'unbalanced %s%s' % (o, c))
+
+    def test_parses_under_node_if_available(self):
+        import shutil as sh
+        import subprocess
+        node = sh.which('node')
+        if not node:
+            self.skipTest('node not available')
+        import tempfile as tf
+        with tf.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+            fh.write(self.script())
+            path = fh.name
+        r = subprocess.run([node, '--check', path], capture_output=True, text=True)
+        os.unlink(path)
+        self.assertEqual(r.returncode, 0, 'JS does not parse:\n' + r.stderr)
+
+    def test_load_surfaces_errors(self):
+        """A failed state fetch must show a message, never a blank page."""
+        self.assertIn('.catch(', self.script())
+        self.assertIn('Could not load', self.script())
+
+
 class TestState(WebTestCase):
     def test_state_without_people(self):
         s = self.w.state()

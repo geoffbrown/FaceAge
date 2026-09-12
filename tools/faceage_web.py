@@ -526,7 +526,14 @@ function api(path, body){
 function load(){
   var qs = '?person='+encodeURIComponent(S&&S.person||'')+
            '&date='+encodeURIComponent(S&&S.date||'');
-  return api('/api/state'+qs).then(function(j){S=j; render();});
+  return api('/api/state'+qs).then(function(j){S=j; render();})
+    .catch(function(e){
+      /* Never leave the page blank. A silent failure here is indistinguishable
+         from a broken build. */
+      document.getElementById('app').innerHTML =
+        '<div class="card"><h2>Could not load</h2><p class="err">'+h(e.message)+
+        '</p><p class="muted">Check the terminal running <code>faceage app</code>.</p></div>';
+    });
 }
 
 function err(m){
@@ -621,14 +628,14 @@ function render(){
   var j = S.job, blocked = !S.staged.length;
   if(j.running){
     o.push('<p class="muted">'+h(j.label)+' — '+Math.round(j.elapsed)+'s</p>');
-    o.push('<pre class="log">'+h(j.log.join('\n'))+'</pre>');
+    o.push('<pre class="log">'+h(j.log.join('\\n'))+'</pre>');
   } else {
     o.push('<div class="row"><button class="primary" id="scorebtn"'+
            (blocked?' disabled':'')+' onclick="score()">Score session</button>');
     if(blocked) o.push('<span class="muted">Import photos first.</span>');
     else if(!cl) o.push('<span class="muted">Needs the checklist, unless one-off.</span>');
     o.push('</div>');
-    if(j.log.length) o.push('<pre class="log">'+h(j.log.join('\n'))+'</pre>');
+    if(j.log.length) o.push('<pre class="log">'+h(j.log.join('\\n'))+'</pre>');
   }
   o.push('</div>');
 
@@ -737,8 +744,13 @@ ROUTES_POST = {
 class Handler(BaseHTTPRequestHandler):
     server_version = 'faceage'
 
-    def log_message(self, fmt, *args):        # quiet; this is a local tool
-        pass
+    def log_message(self, fmt, *args):
+        # Quiet for normal traffic -- this is a local tool, not a web server --
+        # but never silent about failures: a blank page with a silent server is
+        # the hardest thing to diagnose.
+        msg = fmt % args
+        if ' 200 ' not in msg and ' 304 ' not in msg:
+            sys.stderr.write('%s\n' % msg)
 
     def _send(self, code, body, ctype='application/json'):
         raw = body if isinstance(body, bytes) else body.encode('utf-8')
