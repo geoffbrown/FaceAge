@@ -122,6 +122,26 @@ class TestPeople(WebTestCase):
             self.assertFalse(hasattr(self.w, bad), 'unexpected %s' % bad)
 
 
+class TestRename(WebTestCase):
+    def test_renames_the_folder(self):
+        self.person('me')
+        self.history('me', '2026-09-11')
+        r = self.w.do_rename({'old': 'me', 'new': 'Geoffrey'})
+        self.assertEqual(r['name'], 'Geoffrey')
+        self.assertFalse(os.path.isdir(self.w.subj_dir('me')))
+        self.assertTrue(self.w.session_scored('Geoffrey', '2026-09-11'))
+
+    def test_refuses_to_clobber(self):
+        self.person('me'); self.person('jackie')
+        with self.assertRaises(ValueError):
+            self.w.do_rename({'old': 'me', 'new': 'jackie'})
+
+    def test_validates_the_new_name(self):
+        self.person('me')
+        with self.assertRaises(ValueError):
+            self.w.do_rename({'old': 'me', 'new': 'Geoff Brown'})
+
+
 class TestImport(WebTestCase):
     def test_copies_and_leaves_original(self):
         self.person()

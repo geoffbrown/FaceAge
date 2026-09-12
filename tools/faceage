@@ -45,6 +45,14 @@ parse_common() {
   done
   [[ "$SUBJECT" =~ ^[A-Za-z0-9_-]{1,40}$ ]] \
     || die "invalid subject name '$SUBJECT' (letters, digits, dash, underscore)"
+  # Default subject "me" but that folder is gone and exactly one person exists:
+  # use them. This is what happens after renaming yourself in the app.
+  if [[ "$SUBJECT" == "$DEFAULT_SUBJECT" && ! -d "$DATA/subjects/$SUBJECT" && -d "$DATA/subjects" ]]; then
+    local only; only=$(find "$DATA/subjects" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$only" == "1" ]]; then
+      SUBJECT="$(basename "$(find "$DATA/subjects" -maxdepth 1 -mindepth 1 -type d)")"
+    fi
+  fi
   SUBJ_DIR="$DATA/subjects/$SUBJECT"
   SESSIONS_DIR="$SUBJ_DIR/sessions"
   RESULTS_DIR="$SUBJ_DIR/results"

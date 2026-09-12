@@ -494,6 +494,21 @@ def do_create_person(body):
     return {'ok': True, 'name': name}
 
 
+def do_rename(body):
+    """Rename a person. The folder IS the identity, so this is one move."""
+    old = safe_subject(body.get('old'))
+    new = safe_subject((body.get('new') or '').strip())
+    if old == new:
+        return {'ok': True, 'name': new}
+    if os.path.isdir(subj_dir(new)):
+        raise ValueError('%s already exists' % new)
+    if not os.path.isdir(subj_dir(old)):
+        raise ValueError('%s does not exist' % old)
+    os.rename(subj_dir(old), subj_dir(new))
+    build_chart(new)          # the tracker badge comes from the folder name
+    return {'ok': True, 'name': new}
+
+
 def do_import(body):
     """Copy selected inbox files into the session folder. Copy, never move --
     the original stays where it was until the person deletes it themselves."""
@@ -1052,8 +1067,9 @@ select{padding-right:32px}
 .prog{margin:8px 0 6px}
 .bar{height:10px;border-radius:99px;background:var(--line);overflow:hidden}
 .fill{height:100%;background:var(--accent);border-radius:99px;transition:width .35s ease}
-.fill.indet{width:40%!important;animation:slide 1.2s ease-in-out infinite alternate}
-@keyframes slide{from{margin-left:0}to{margin-left:60%}}
+.fill.indet{width:100%!important;background:linear-gradient(90deg,var(--line) 0%,var(--accent) 50%,var(--line) 100%);
+  background-size:200% 100%;animation:shimmer 1.6s linear infinite}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 .progmeta{display:flex;gap:8px;align-items:baseline;margin-top:10px;font-size:14px;color:var(--ink2);
   font-variant-numeric:tabular-nums}
 .progmeta b{color:var(--ink);font-size:15px}
@@ -1174,7 +1190,8 @@ function render(){
 
   // header chips
   document.getElementById('who').innerHTML = S.person
-    ? '<span class="chip"><b>'+h(S.person)+'</b><button onclick="changePerson()">change</button></span>' : '';
+    ? '<span class="chip"><b>'+h(S.person)+'</b><button onclick="renamePerson()">rename</button>'+
+      '<button onclick="changePerson()">change</button></span>' : '';
   document.getElementById('sess').innerHTML = S.person
     ? '<span class="chip">'+h(niceDate(S.date))+
       ((S.staged.length||S.checklist||S.result)?'<button onclick="discard()">start over</button>':'')+
@@ -1302,15 +1319,30 @@ function cardProgress(){
   var pct = pr.total ? pr.pct : null;
   var o = ['<div class="card"><h2>Analysing…</h2>',
            '<p class="lead">Finding the face in each photo, then estimating age.</p>',
-           '<div class="prog"><div class="bar"><div class="fill'+(pct===null?' indet':'')+
-           '" style="width:'+(pct===null?40:pct)+'%"></div></div>',
-           '<div class="progmeta"><b>'+h(pr.phase||'Starting')+'</b>'+
-           (pr.total?('<span>'+pr.done+' of '+pr.total+'</span>'):'')+
-           (j.eta!=null?('<span>· about '+fmtSecs(j.eta)+' left</span>'):'')+
-           '<span class="pct">'+(pct===null?'':Math.round(pct)+'%')+'</span></div></div>',
+           '<div class="prog"><div class="bar"><div id="pfill" class="fill'+(pct===null?' indet':'')+
+           '" style="width:'+(pct===null?100:pct)+'%"></div></div>',
+           '<div class="progmeta"><b id="pphase">'+h(pr.phase||'Starting')+'</b>'+
+           '<span id="pcount">'+(pr.total?(pr.done+' of '+pr.total):'')+'</span>'+
+           '<span id="peta">'+(j.eta!=null?('· about '+fmtSecs(j.eta)+' left'):'')+'</span>'+
+           '<span class="pct" id="ppct">'+(pct===null?'':Math.round(pct)+'%')+'</span></div></div>',
            '<details id="logdet"'+(ui.logOpen?' open':'')+'><summary>Details</summary>'+
-           '<pre class="log">'+h(j.log.join('\n'))+'</pre></details></div>'];
+           '<pre class="log" id="plog">'+h(j.log.join('\n'))+'</pre></details></div>'];
   return o.join('');
+}
+
+/* Patch the progress card in place. Re-rendering it every poll restarted the
+   CSS animation from zero each time, which read as a hard cut to the left. */
+function updateProgress(j){
+  var pr = j.progress || {}, pct = pr.total ? pr.pct : null;
+  var f = document.getElementById('pfill'); if(!f) return false;
+  if(pct===null){ f.className='fill indet'; f.style.width='100%'; }
+  else { f.className='fill'; f.style.width=pct+'%'; }
+  document.getElementById('pphase').textContent = pr.phase||'Starting';
+  document.getElementById('pcount').textContent = pr.total?(pr.done+' of '+pr.total):'';
+  document.getElementById('peta').textContent = j.eta!=null?('· about '+fmtSecs(j.eta)+' left'):'';
+  document.getElementById('ppct').textContent = pct===null?'':Math.round(pct)+'%';
+  var l = document.getElementById('plog'); if(l) l.textContent = j.log.join('\n');
+  return true;
 }
 
 /* ---- 5 · result ------------------------------------------------------------ */
@@ -1399,6 +1431,12 @@ function refreshUseBtn(){
 /* ---- actions --------------------------------------------------------------- */
 function pickPerson(){ var s = document.getElementById('pick'); S.person = s.value; S.date = null; sel = {}; load(); }
 function changePerson(){ S.person = null; render(); }
+function renamePerson(){
+  var n = prompt('Rename '+S.person+' to:', S.person);
+  if(!n || n.trim()===S.person) return;
+  api('/api/person/rename', {old:S.person, new:n.trim()})
+    .then(function(j){ S.person = j.name; load(); }).catch(fail);
+}
 function addPerson(){
   var n = (document.getElementById('newname').value||'').trim();
   if(!n) return;
@@ -1440,8 +1478,9 @@ function analyse(){
 }
 function poll(){
   api('/api/job').then(function(j){
-    S.job = j; render();
-    if(j.running) setTimeout(poll, 800); else load();
+    S.job = j;
+    if(j.running){ if(!updateProgress(j)) render(); setTimeout(poll, 800); }
+    else load();
   });
 }
 
@@ -1478,6 +1517,7 @@ ROUTES_POST = {
     '/api/reshoot': do_reshoot,
     '/api/discard': do_discard,
     '/api/add': do_add,
+    '/api/person/rename': do_rename,
 }
 
 
