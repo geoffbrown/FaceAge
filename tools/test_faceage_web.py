@@ -523,11 +523,55 @@ class TestSessionResult(WebTestCase):
         self.assertFalse(r['in_series'])
         self.assertIn('Frontal light', r['excluded_reason'])
 
-    def test_valid_checklist_is_in_series(self):
+    def test_valid_but_unlogged_is_not_in_the_series(self):
+        """A one-off: the checklist passed and the number exists, but nothing
+        was written. That is exactly the case the Add button is for."""
         self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
                              'answers': {k: True for k, _ in self.w.CHECKLIST}})
         self.summary()
-        self.assertTrue(self.w.session_result('me', '2026-09-13')['in_series'])
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertTrue(r['valid'])
+        self.assertFalse(r['logged'])
+        self.assertFalse(r['in_series'])
+        self.assertTrue(r['has_checklist'])
+
+    def test_valid_and_logged_is_in_series(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.summary()
+        self.history('me', '2026-09-13')
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertTrue(r['logged'])
+        self.assertTrue(r['in_series'])
+
+    def test_logged_but_invalid_is_not_in_series(self):
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'answers': a})
+        self.summary()
+        self.history('me', '2026-09-13')
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertTrue(r['logged'])
+        self.assertFalse(r['valid'])
+        self.assertFalse(r['in_series'])
+
+    def test_promotion_is_recorded(self):
+        """Adding after the number is known is allowed, but not silent."""
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.summary()
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                          'files': ['IMG_1.jpg']})
+        calls = []
+        self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
+        self.w.do_score({'person': 'me', 'date': '2026-09-13', 'promote': True})
+        self.assertNotIn('--no-log', calls[0])
+        log = os.path.join(self.w.results_dir('me'), 'promoted.csv')
+        with open(log) as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(rows[0]['session'], '2026-09-13')
+        self.assertEqual(rows[0]['mean_at_promotion'], '44.12')
 
     def test_no_pairwise_delta_is_exposed(self):
         """§3: pairwise session deltas are not interpreted. The result must not
