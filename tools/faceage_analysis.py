@@ -31,6 +31,13 @@ import datetime
 
 DAYS_PER_MONTH = 365.2425 / 12.0        # 30.436875
 
+# The repeatability set is pre-registered (§4): five sessions in seven days, on
+# these dates. Hardcoded so `faceage gate` cannot quietly fold in some other
+# session that happens to sit in the window -- an ad-hoc test run, a reshoot --
+# and report a sigma that was not the one the study committed to.
+REHEARSAL_SESSIONS = ('2026-09-11', '2026-09-13', '2026-09-14',
+                      '2026-09-16', '2026-09-17')
+
 # Two-sided 95% Student-t critical values. scipy is not a dependency and the
 # study will never have more than a few dozen sessions, so a table is honest
 # and exact where it matters. Beyond df=30 the normal quantile is within 0.05.
@@ -78,6 +85,43 @@ def load_validity(path):
             out[d] = (v not in ('0', 'no', 'false', 'invalid'),
                       (r.get('reason') or '').strip())
     return out
+
+
+def load_anchors(path):
+    """B (baseline) and R (retest) dates, if set. anchors.csv: anchor,date,note.
+
+    These are study landmarks, not data: B starts the six-month clock and R is
+    the retest. Sessions before B are rehearsal and do not enter the series
+    (§4), so the trend is fitted from B onward once B exists.
+    """
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    with open(path) as fh:
+        for r in csv.DictReader(fh):
+            k = (r.get('anchor') or '').strip().upper()
+            if k not in ('B', 'R'):
+                continue
+            try:
+                out[k] = datetime.date.fromisoformat((r.get('date') or '').strip()[:10])
+            except ValueError:
+                continue
+    return out
+
+
+def series_for_trend(rows, anchors):
+    """§4: rehearsal sessions are not submitted and do not enter the series.
+
+    With B set, the series starts at B. Without B every session is in, which is
+    right early on -- there is nothing else to fit -- but it means the trend
+    shown before B includes rehearsal sessions, and the chart says so.
+    """
+    b = (anchors or {}).get('B')
+    if not b:
+        return list(rows), []
+    keep = [r for r in rows if r['date'] >= b]
+    pre = [r for r in rows if r['date'] < b]
+    return keep, pre
 
 
 def load_history(path, validity=None):
@@ -303,7 +347,7 @@ def _fmt(v, nd=3):
     return '--' if v is None else ('%.*f' % (nd, v))
 
 
-def report(rows, dropped, args):
+def report(rows, dropped, args, rehearsal=None, anchors=None, pre_b=None):
     out = []
     A = out.append
     A('=' * 74)
@@ -318,21 +362,39 @@ def report(rows, dropped, args):
     A('')
 
     if args.sigma or args.all:
-        s = sigma(rows)
+        rset = rows if rehearsal is None else rehearsal
+        s = sigma(rset)
         dec, why = gate(s['sigma'])
         A('-- §4 REPEATABILITY AND GATE ' + '-' * 45)
+        A('pre-registered   : %s' % ', '.join(REHEARSAL_SESSIONS))
+        have = {r['label'] for r in rset}
+        miss = [d for d in REHEARSAL_SESSIONS if d not in have]
+        extra = sorted(have - set(REHEARSAL_SESSIONS))
+        if miss:
+            A('NOT YET RUN      : %s' % ', '.join(miss))
+        if extra:
+            A('NON-REHEARSAL    : %s  (included by --sessions)' % ', '.join(extra))
         A('sessions         : %d' % s['n'])
         if s['sigma'] is None:
             A('sigma            : -- (%s)' % why)
+            if miss:
+                A('                   the study is not finished; %d session(s) to go'
+                  % len(miss))
         else:
-            A('session means    : %s' % ', '.join('%.2f' % r['mean'] for r in rows))
+            A('session means    : %s' % ', '.join('%.2f' % r['mean'] for r in rset))
             A('mean of means    : %s' % _fmt(s['mean'], 2))
             A('range            : %s .. %s  (%s yr)'
               % (_fmt(s['min'], 2), _fmt(s['max'], 2), _fmt(s['range'], 2)))
             A('sigma (SD, n-1)  : %s yr' % _fmt(s['sigma']))
             A('')
-            A('GATE DECISION    : %s' % dec)
-            A('                   %s' % why)
+            if miss:
+                A('GATE DECISION    : NOT YET -- %d of %d rehearsal sessions run'
+                  % (len(rset), len(REHEARSAL_SESSIONS)))
+                A('                   sigma above is provisional. The gate is')
+                A('                   evaluated once, on the full set (§4).')
+            else:
+                A('GATE DECISION    : %s' % dec)
+                A('                   %s' % why)
             for cad, nn, hh in (('monthly', 6, DAYS_PER_MONTH),
                                 ('weekly', 26, 7.0)):
                 se = se_total_change(s['sigma'], nn, hh)
@@ -345,6 +407,14 @@ def report(rows, dropped, args):
     if args.trend or args.all:
         t = trend(rows)
         A('-- §3 TREND ' + '-' * 62)
+        b = (anchors or {}).get('B')
+        if b:
+            A('series starts at : B = %s' % b.isoformat())
+            if pre_b:
+                A('excluded pre-B   : %d rehearsal session(s)' % len(pre_b))
+        else:
+            A('B not set        : every session is in the fit, rehearsal included.')
+            A('                   Set it with `faceage anchor B YYYY-MM-DD`.')
         if not t.get('ok'):
             A('not computed: %s' % t.get('why'))
         else:
@@ -403,8 +473,10 @@ def main(argv=None):
     p.add_argument('--validity', default=None,
                    help='session_validity.csv (default: alongside the history)')
     p.add_argument('--sessions', default=None,
-                   help='comma-separated session dates to restrict to '
-                        '(the repeatability set, for --sigma)')
+                   help='comma-separated session dates for the repeatability '
+                        'set (default: the pre-registered §4 dates)')
+    p.add_argument('--anchors', default=None,
+                   help='anchors.csv holding B and R (default: alongside history)')
     p.add_argument('--sigma', action='store_true', help='§4 repeatability + gate')
     p.add_argument('--trend', action='store_true', help='§3 OLS slope + CI')
     p.add_argument('--luma', action='store_true', help='§6 falsification check')
@@ -420,29 +492,39 @@ def main(argv=None):
     history = args.history or os.path.join(results, 'faceage_history.csv')
     validity = args.validity or os.path.join(results, 'session_validity.csv')
 
-    rows, dropped = load_history(history, load_validity(validity))
+    anchors_path = args.anchors or os.path.join(results, 'anchors.csv')
 
-    if args.sessions:
-        want = {s.strip() for s in args.sessions.split(',') if s.strip()}
-        missing = want - {r['label'] for r in rows}
-        rows = [r for r in rows if r['label'] in want]
-        if missing:
-            print('WARNING: requested sessions not in the valid set: %s'
-                  % ', '.join(sorted(missing)), file=sys.stderr)
+    rows, dropped = load_history(history, load_validity(validity))
+    anchors = load_anchors(anchors_path)
+
+    # The repeatability set is the pre-registered §4 dates unless overridden.
+    want = ({s.strip() for s in args.sessions.split(',') if s.strip()}
+            if args.sessions else set(REHEARSAL_SESSIONS))
+    rehearsal = [r for r in rows if r['label'] in want]
+
+    # The trend runs on the series, which starts at B once B is set.
+    series, pre_b = series_for_trend(rows, anchors)
 
     if args.json:
-        s = sigma(rows)
-        dec, why = gate(s['sigma'])
+        st = sigma(rehearsal)
+        complete = all(d in {r['label'] for r in rehearsal}
+                       for d in REHEARSAL_SESSIONS)
+        dec, why = gate(st['sigma']) if complete else ('NOT YET', 'rehearsal incomplete')
         print(json.dumps({
             'n_valid': len(rows),
             'dropped': [{'session': d['label'], 'reason': d.get('reason')}
                         for d in dropped],
-            'sigma': s, 'gate': {'decision': dec, 'detail': why},
-            'trend': trend(rows), 'luma': luma_check(rows),
+            'anchors': {k: v.isoformat() for k, v in anchors.items()},
+            'rehearsal': {'requested': sorted(want),
+                          'found': [r['label'] for r in rehearsal],
+                          'complete': complete},
+            'sigma': st, 'gate': {'decision': dec, 'detail': why},
+            'trend': trend(series), 'luma': luma_check(series),
         }, indent=2, default=str))
         return 0
 
-    print(report(rows, dropped, args))
+    print(report(series, dropped, args, rehearsal=rehearsal,
+                 anchors=anchors, pre_b=pre_b))
     return 0
 
 
