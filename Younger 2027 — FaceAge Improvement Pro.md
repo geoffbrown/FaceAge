@@ -180,7 +180,14 @@ So you will see your baseline FaceAge estimate. You are not flying blind — you
 
 **3. You can probably run the model yourself.** The Harvard AIM Lab publishes the full FaceAge code on GitHub (`AIM-Harvard/FaceAge`), including a ready-made inference script that scores every image in a folder and writes a CSV.
 
-Caveat on the weights: the README says pre-trained weights "will be made available upon publication" via Zenodo, and in the meantime links to a Google Drive file that was set up for peer reviewers. The paper is published, so a Zenodo record may now exist — but confirm the weights actually download before planning around this. If they don't, email `hello@denbonte.me` (the author lists it in the repo for exactly this kind of question). Setup details in §10.
+~~Caveat on the weights~~ — **resolved, 2026-09.** The weights are published in the AIM-Harvard release and download cleanly:
+
+```
+https://github.com/AIM-Harvard/FaceAge/releases/download/v1/faceage_model.h5
+sha256 dd43eb66616558a70f86d55d405c2e5be1e49569654b7eb852c206393fd7a85d
+```
+
+`tools/install.sh` fetches and hash-verifies them automatically and refuses to proceed on a mismatch. The pipeline has since been validated against the authors' own published output (`validation/reference/utk_hi-res_qa_res.csv`): max abs diff **4.72e-05** across 56 images, which is serialisation precision, not computation. Setup in §10.
 
 Practical consequence: run your monthly reference photos through the model locally. Calibrate the local output against the official baseline number the dashboard returns, then use the local pipeline as your monthly tracker. Two cautions — the contest's version may differ from the public release, and their preprocessing/crop may differ from yours, so treat local numbers as a **relative** trend line, not the official score. That is still enough to answer the questions that matter: is the retinoid working, and is my cut costing me facial volume (§5)?
 
@@ -224,29 +231,47 @@ Play defense first, then instrument everything.
 
 ## 10. Running FaceAge locally on the Mac
 
-### The problem
+**Status: built and validated.** This section described an open problem; it is now solved. Option A below was taken, and this repo *is* the result.
 
-The repo's environment is period-accurate to 2021: **Python 3.6.13, TensorFlow 2.6.2, Keras 2.6.0, NumPy 1.19.5**, plus the `MTCNN` library for face detection. None of that has an Apple Silicon build. `conda env create --file environment-cpu.yaml` will fail on an M-series Mac.
+### Install
 
-Good news on compute: inference is light. The authors' benchmark ran 2,547 images on CPU in roughly the same time as on a TITAN RTX — the bottleneck is face localization, at well under a second per image. Your Mac is far more than enough for ten photos a month.
+```bash
+git clone https://github.com/geoffbrown/FaceAge.git ~/Documents/GitHub/FaceAge
+cd ~/Documents/GitHub/FaceAge
+./tools/install.sh
+```
 
-### Options, best first
+Idempotent and safe to re-run. It handles colima + docker via Homebrew, Rosetta 2, the VM, hash-verified weights, the container build (~10 min under emulation) and `PATH`. Then, in a new terminal:
 
-**A. Docker with `--platform linux/amd64`.** Build the conda environment inside a Linux container running under Rosetta emulation. Slow to build, but it reproduces the authors' environment exactly and you never fight dependency resolution. Most likely to work first try. Emulated inference on ten images is still seconds.
+```bash
+faceage run          # score today's session folder
+faceage chart        # build + open the tracker
+faceage history      # print the longitudinal series
+faceage doctor       # check VM, image, weights hash, session count
+faceage validate     # re-run validation against the authors' published CSV
+```
 
-**B. Rosetta conda environment.** Install an x86_64 Miniconda alongside your native one, create the env from `environment-cpu.yaml` under Rosetta 2. Faster than Docker, more fragile — old `osx-64` builds of TF 2.6 and its pinned NumPy still exist but resolution can break.
+Photos live in `~/FaceAgeData/subjects/<name>/`, outside the repo. `.gitignore` excludes every image extension anywhere in the tree, plus weights and all result CSVs.
 
-**C. Modernise the environment.** Python 3.11 with a current TensorFlow, using the `tf-keras` compatibility package to load the Keras 2 `.h5` weights. Cleanest if it works, but Keras 3 changed model loading and MTCNN has known issues across versions. Treat as a fallback.
+### Why option A
 
-**D. Google Colab.** The repo ships working Colab notebooks; zero install. The tradeoff is uploading photos of your face to Google's infrastructure. Fine for a one-off sanity check that the weights load and the pipeline runs; not where I'd keep a monthly series of your own face.
+**A. Docker with `--platform linux/amd64`** — taken. The repo's environment is period-accurate to 2021 (Python 3.6.13, TensorFlow 2.6.2, Keras 2.6.0, NumPy 1.19.5, MTCNN), none of which has an Apple Silicon build, so `conda env create --file environment-cpu.yaml` fails on an M-series Mac. A Linux container under Apple Virtualization + Rosetta reproduces the authors' environment exactly. **Validated at max abs diff 4.72e-05** against their published output — agreement is exact to the precision they published. Deviations from their environment are documented in the repo README.
 
-**Recommendation:** have Claude Code do option A on the Mac. It's a contained task — clone, get the weights, build the container, run `src/test/predict_folder_demo.py` against a folder of your photos, confirm the output CSV. Then wrap it in a one-line shell alias so the monthly run is trivial.
+Compute is a non-issue: the authors' benchmark ran 2,547 images on CPU in roughly the same time as on a TITAN RTX. Ten photos is seconds, even emulated.
 
-### Before you start
+**B. Rosetta conda environment** — not needed. Faster to build, more fragile; resolution of old `osx-64` TF 2.6 builds can break.
 
-1. Confirm the weights actually download (§8, item 3). Everything else is pointless without them.
-2. The script reads `.jpg`/`.png` from a folder configured in `config_predict_folder_demo.yaml` and writes a CSV of `subj_id, faceage`. Name your files by date so the series sorts itself.
-3. The repo's `data` folder documents their **photo QA criteria**, with worked examples of acceptable and disqualified images. Read that before finalising your capture standard in §3 — it's the same quality bar their pipeline was validated against.
+**C. Modernise the environment** — not needed, and now actively undesirable: a current TensorFlow would change the arithmetic and break comparability with the validated numbers above.
+
+**D. Google Colab** — rejected. Uploading photos of your face to Google's infrastructure, for a pipeline whose entire design premise is that no image leaves the machine.
+
+### Operating notes
+
+1. ~~Confirm the weights download~~ — done, hash-verified by the installer (§8, item 3).
+2. **Take 8–12 photos per session, not one.** Per-photo dispersion is wide by design; the session mean is the signal and `std` tells you how noisy that session was. Re-running a session date replaces its row rather than duplicating it.
+3. **Watch the `mean_luma` column.** It is the mean pixel value of the face crop before normalisation, 0–255. Keep it within roughly ±5 of prior sessions — it is the early warning that lighting has drifted, and per §3 lighting is the dominant photographic confound.
+4. The photo QA criteria from the authors' Supplement Table 1 are implemented as automated flags (hard failures and advisories) and documented in the repo README §3. Advisory-flagged photos are excluded from the session mean by default.
+5. Measurement commitments — exclusion rules, analysis, stopping rule, falsification check — are pre-registered in `docs/PREREGISTRATION.md`, committed before any study data exists. §3 of this note governs capture; that document governs analysis.
 
 ---
 
