@@ -370,6 +370,45 @@ def do_preflight(person, date):
             'findings': [f.as_dict() for f in findings]}
 
 
+def do_notes(body):
+    """Save session notes typed into the tracker.
+
+    Notes are commentary. Nothing reads them for analysis, and exclusion is
+    governed solely by session_validity.csv, so a note cannot quietly remove a
+    session from the series. That is why this needs no before/after ordering
+    rule, unlike the checklist.
+    """
+    person = safe_subject(body.get('person'))
+    notes = body.get('notes') or {}
+    if not isinstance(notes, dict):
+        raise ValueError('notes must be an object of session_date -> text')
+
+    hist = os.path.join(results_dir(person), 'faceage_history.csv')
+    if not os.path.exists(hist):
+        raise ValueError('no history for %s yet' % person)
+    with open(hist) as fh:
+        known = {(r.get('session_date') or '').strip()
+                 for r in csv.DictReader(fh)}
+
+    clean = {}
+    for k, v in notes.items():
+        k = str(k).strip()
+        if k not in known:
+            raise ValueError('unknown session %s' % k)
+        clean[k] = str(v)[:500].replace('\r', ' ').replace('\n', ' ')
+
+    env = dict(os.environ, FACEAGE_RESULTS=results_dir(person),
+               FACEAGE_SUBJECT_LABEL=person)
+    code = ('import sys, json; sys.path.insert(0, %r); '
+            'import faceage_chart as c; c.write_notes(json.load(sys.stdin))' % HERE)
+    out = subprocess.run([sys.executable, '-c', code], input=json.dumps(clean),
+                         capture_output=True, text=True, env=env)
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip() or 'could not write notes')
+    build_chart(person)          # regenerate so the page matches the file
+    return {'ok': True, 'saved': len(clean)}
+
+
 def build_chart(person):
     out = subprocess.run([sys.executable, os.path.join(HERE, 'faceage_chart.py')],
                          capture_output=True, text=True,
@@ -691,6 +730,7 @@ ROUTES_POST = {
     '/api/import': do_import,
     '/api/checklist': do_checklist,
     '/api/score': do_score,
+    '/api/notes': do_notes,
 }
 
 
