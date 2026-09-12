@@ -1029,10 +1029,10 @@ function render(){
   o.push('<input id="newname" placeholder="new person" size="12">');
   o.push('<button onclick="addPerson()">Add</button>');
   o.push('</div>');
-  o.push('<div class="note">Each person has their own series, exposure baseline and chart. '+
-         'There is no combined view: different cameras and rooms move FaceAge by more than any '+
-         'real difference between two people would. Other people’s photos are their '+
-         'biometric data — get their agreement, and delete their folder when done.</div>');
+  o.push('<div class="note">Everyone gets their own tracker and chart. There is no '+
+         'side-by-side view on purpose — two people shot in different rooms with '+
+         'different phones cannot be compared meaningfully. Someone else\u2019s photos '+
+         'are theirs: ask first, and delete their folder when you are done.</div>');
   o.push('</div>');
 
   if(!S.person){ a.innerHTML = o.join(''); wire(); return; }
@@ -1053,13 +1053,13 @@ function render(){
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
   o.push('<div class="card"><h2>1 \u00b7 Import photos</h2>');
   if(S.discardNote)
-    o.push('<div class="warn">Discarded <b>'+h(S.discardNote)+'</b>. '+
-           'Everything was moved to <code>discarded/</code>, not deleted. '+
-           'This session is empty and ready to start over.</div>');
+    o.push('<div class="warn">Cleared <b>'+h(S.discardNote)+'</b>. Nothing was '+
+           'deleted \u2014 it all moved to <code>discarded/</code>. This session is '+
+           'empty and ready to go again.</div>');
   if(S.movedNote)
-    o.push('<div class="warn">That session had already been scored, so these '+
-           'photos opened a new take: <b>'+h(S.movedNote)+'</b>. It starts with '+
-           'a clean checklist and no result of its own.</div>');
+    o.push('<div class="warn">That session was already scored, so these photos '+
+           'started a new take: <b>'+h(S.movedNote)+'</b> \u2014 fresh checklist, '+
+           'no result yet.</div>');
   o.push('<div class="row" style="margin-bottom:8px">');
   o.push('<button onclick="goUp()"'+(B.parent?'':' disabled')+' title="parent folder">\u2191</button>');
   o.push('<input id="path" value="'+h(B.path)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:12.5px">');
@@ -1093,9 +1093,10 @@ function render(){
     o.push('<button class="primary" onclick="doImport()">Import selected</button>');
     o.push('</div>');
     if(B.images.some(function(f){return f.heic;}))
-      o.push('<div class="note">HEIC files convert to JPEG on scoring, originals kept. '+
-             'Simpler is Settings \u203a Camera \u203a Formats \u203a Most Compatible, so the '+
-             'phone writes JPEG and there is no second encoder in the instrument.</div>');
+      o.push('<div class="note">HEIC photos are converted to JPEG when you score, '+
+             'and the originals are kept. Simpler still: set the phone to Settings '+
+             '\u203a Camera \u203a Formats \u203a Most Compatible so it writes JPEG '+
+             'directly.</div>');
   }
   if(S.staged.length)
     o.push('<div class="note">Staged: '+S.staged.map(h).join(', ')+'</div>');
@@ -1106,20 +1107,19 @@ function render(){
   o.push('<div class="card"><h2>2 · Session checklist</h2>');
   if(cl){
     o.push('<p class="muted">Recorded '+h(cl.recorded_at)+' — '+
-           (cl.valid?'<b style="color:var(--ok)">valid</b>':
-                     '<b style="color:var(--er)">protocol failure</b>')+'</p>');
+           (cl.valid?'<b style="color:var(--ok)">all good</b>':
+                     '<b style="color:var(--er)">problem noted</b>')+'</p>');
     if(!cl.valid) o.push('<p class="muted">Failed: '+cl.failed.map(h).join('; ')+'</p>');
     if(S.checklist_stale)
-      o.push('<div class="warn">Photos were imported after this was recorded, so '+
-             'it may describe a different capture.'+
-             (S.scored?' This session has been scored, so it cannot be re-answered '+
-                       'now — deciding validity after seeing the number is what §1 '+
-                       'rules out. Shoot a fresh session instead.'
-                     :' Re-answer it below if you reshot.')+'</div>');
+      o.push('<div class="warn">You imported photos after answering this, so it '+
+             'may not describe the ones in the session now.'+
+             (S.scored?' This session is already scored, so the answers are locked. '+
+                       'Use Reshoot for another take, or Start fresh to clear it.'
+                     :' If you reshot, re-answer it below.')+'</div>');
     if(!S.scored){
       o.push('<div class="row" style="margin-top:8px">'+
              '<button onclick="reopen()">Re-answer checklist</button>'+
-             '<span class="muted">allowed only while unscored</span></div>');
+             '<span class="muted">only until the session is scored</span></div>');
       if(S.reopen){
         S.checklist_items.forEach(function(it){
           var pre = prefill && prefill[it.key];
@@ -1136,9 +1136,9 @@ function render(){
     o.push('<p class="muted">This session was already scored without a checklist. '+
            'Recording one now would be deciding after seeing the number.</p>');
   } else {
-    o.push('<p class="muted">Answer before scoring. Unchecking an item records a '+
-           'protocol failure with that reason — the session still gets scored, '+
-           'but is excluded from the analysis.</p>');
+    o.push('<p class="muted">Tick what was true for this shoot, before you score '+
+           'it. Anything you leave unticked marks the session as a bad capture: '+
+           'it still gets scored, but stays out of the trend.</p>');
     S.checklist_items.forEach(function(it){
       var pre = prefill && prefill[it.key];
       o.push('<div class="chk"><input type="checkbox" class="cl" id="cl_'+h(it.key)+
@@ -1149,8 +1149,8 @@ function render(){
       o.push('<button onclick="sameAsLast()">Same as '+h(S.prev_checklist.session_date)+'</button>');
     o.push('<input id="clnotes" placeholder="notes (optional)" style="flex:1">');
     o.push('<button class="primary" onclick="saveChecklist()">Record</button></div>');
-    o.push('<div class="note">Ticking copies last session\u2019s answers so you can '+
-           'review them rather than retype them \u2014 they are still yours to submit.</div>');
+    o.push('<div class="note">Copies your last answers so you can check them '+
+           'instead of retyping. You still have to press Record.</div>');
   }
   o.push('</div>');
 
@@ -1187,11 +1187,13 @@ function render(){
            (S.oneoff?' checked':'')+'> Just tell me the number \u2014 do not add '+
            'this to the series</label>');
     o.push('<div class="note">'+(S.oneoff
-        ? 'Nothing is written to the series. You will still see the number, and '+
-          'you can add it afterwards \u2014 this is not a one-way door.'
-        : 'This writes a row to the series and it appears on the chart. Whether '+
-          'the pre-registered analysis counts it is decided by the checklist, '+
-          'before the number exists \u2014 not afterwards.')+'</div>');
+        ? 'Scores the photos and shows you the number. Nothing is saved \u2014 '+
+          'but you can still add it afterwards if you want to keep it.'
+        : 'Adds this session to your tracker and puts it on the chart.'+
+          ((cl && !cl.valid)
+            ? ' You marked a problem on the checklist, so it will show on the '+
+              'chart but stay out of the trend line.'
+            : ''))+'</div>');
     var R = S.result;
     if(R && R.mean != null){
       o.push('<div class="result">');
@@ -1211,28 +1213,28 @@ function render(){
       o.push('</div>');
       if(!R.logged){
         o.push('<div class="notlogged">');
-        o.push('<div><b>Not in the series.</b> This was a one-off \u2014 nothing '+
-               'was written to the tracker.</div>');
+        o.push('<div><b>Not saved.</b> This was a one-off, so nothing went to '+
+               'your tracker.</div>');
         if(R.has_checklist)
           o.push('<button class="primary" style="margin-top:9px" onclick="promote()">'+
                  'Add this session to the series</button>');
         else
           o.push('<div class="muted" style="margin-top:7px">Answer the checklist '+
-                 'above first \u2014 a session joins the series with its validity '+
-                 'recorded, not without it.</div>');
+                 'above first, then you can add it.</div>');
         o.push('</div>');
       } else if(!R.valid)
-        o.push('<div class="warn" style="margin:9px 0 0">Recorded as a protocol '+
-               'failure, so this number is <b>not in the series</b> and is excluded '+
-               'from the analysis'+(R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
+        o.push('<div class="warn" style="margin:9px 0 0">You marked a problem with '+
+               'this capture, so it is on the chart but <b>left out of the trend'+
+               '</b>'+(R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
       else
-        o.push('<div class="inseries">\u2713 In the series</div>');
+        o.push('<div class="inseries">\u2713 Saved to your tracker</div>');
       if(R.fellback)
-        o.push('<div class="warn" style="margin:9px 0 0">Every photo carried a QA '+
-               'advisory, so the mean uses all scored photos. Check the capture '+
-               'before trusting it.</div>');
-      o.push('<div class="note">A single session is one point. §3 interprets the '+
-             'fitted trend across sessions, never the gap between two of them.</div>');
+        o.push('<div class="warn" style="margin:9px 0 0">Every photo had something '+
+               'off with it, so the average had to use all of them rather than '+
+               'only the clean ones. Worth a reshoot.</div>');
+      o.push('<div class="note">One session on its own does not mean much. What '+
+             'counts is the trend across many of them, so try not to read too '+
+             'much into a single number.</div>');
       o.push('</div>');
     }
     if(j.log.length){
@@ -1263,9 +1265,9 @@ function render(){
         o.push('<p class="muted">'+h(f.frames.slice(0,6).join(', '))+
                (f.frames.length>6?', +'+(f.frames.length-6)+' more':'')+'</p>');
       o.push('</div>');});
-    o.push('<div class="note">No photograph is ever modified. When a check fails the '+
-           'fix is the lighting or the rig, never the file — adjusting exposure in '+
-           'software would hide the error instead of removing it.</div>');
+    o.push('<div class="note">Your photos are never edited. If a check fails, '+
+           'change the lighting or the setup and shoot again — brightening the '+
+           'file afterwards would hide the problem rather than fix it.</div>');
   }
   o.push('</div>');
 
@@ -1312,14 +1314,14 @@ function sameAsLast(){
 function discard(){
   var scored = S.scored, hasB = S.has_b;
   var msg = 'Throw away session '+S.date+' completely?\\n\\n'+
-            'Photos, checklist, score, QA and its rows in the series are moved '+
-            'to discarded/ and the session starts over empty.';
+            'The photos, checklist, score and results all move to discarded/ '+
+            'and this session starts over empty.';
   if(scored && hasB)
-    msg += '\\n\\nThis session HAS BEEN SCORED and B is set, so this removes a '+
-           'point from the study series. The discard is logged with your reason.';
+    msg += '\\n\\nThis one is already scored and counts towards your study, so '+
+           'this removes a real data point. It is logged with your reason.';
   else if(scored)
-    msg += '\\n\\nIt has been scored, but B is not set yet, so nothing has '+
-           'entered the study series.';
+    msg += '\\n\\nIt is scored, but you have not set a baseline yet, so the '+
+           'study has not started counting.';
   if(!confirm(msg)) return;
   var reason = prompt('Why? (recorded in discarded.csv)', '') || '';
   api('/api/discard', {person:S.person, date:S.date, reason:reason})

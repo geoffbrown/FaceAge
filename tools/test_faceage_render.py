@@ -207,6 +207,31 @@ def states():
     ]
 
 
+class TestCopy(unittest.TestCase):
+    """UI chrome should read like instructions, not like the protocol document.
+
+    The findings panel is exempt: its why/do text comes from the server and
+    earns its detail. This covers the labels and explanations around it.
+    """
+
+    def script(self):
+        import faceage_web
+        return re.search(r'<script>(.*?)</script>', faceage_web.PAGE, re.S).group(1)
+
+    def test_no_section_references(self):
+        """A user should never have to know what §1 is to use the page."""
+        js = self.script()
+        bad = [l.strip()[:80] for l in js.split('\n') if '\u00a7' in l]
+        self.assertEqual(bad, [], 'section references in UI copy: %s' % bad)
+
+    def test_no_methodology_jargon(self):
+        js = self.script()
+        for term in ('pre-registered', 'protocol failure', 'validity recorded',
+                     'one-way door', 'the study series'):
+            hits = [l.strip()[:80] for l in js.split('\n') if term in l]
+            self.assertEqual(hits, [], '%r in UI copy: %s' % (term, hits))
+
+
 class TestRender(unittest.TestCase):
     def test_render_runs_for_every_state(self):
         node = shutil.which('node')
