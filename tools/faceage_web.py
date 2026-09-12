@@ -70,7 +70,7 @@ import faceage_analysis as fa            # noqa: E402
 CHECKLIST = [
     ('grooming', 'Makeup, tinted product and grooming match baseline'),
     ('light', 'Frontal light from the fixed rig only — nothing overhead'),
-    ('camera', 'Same camera, lens, distance, height and framing (rear main, not ultrawide)'),
+    ('camera', 'Same camera, propped at the same distance and height (never hand-held)'),
     ('pose', 'Neutral expression, mouth closed, head level'),
     ('photoday', 'Photo-day controls met (alcohol 48h, sodium, 7h+ sleep, '
                  'wake interval, no hot shower/sauna/hard training within 2h, '
@@ -1076,6 +1076,12 @@ select{padding-right:32px}
 .progmeta .pct{margin-left:auto;font-weight:700;color:var(--ink);font-size:20px;letter-spacing:-.01em}
 details{margin-top:14px}
 summary{cursor:pointer;color:var(--ink3);font-size:13px}
+details.guide{margin:0 0 16px;padding:12px 16px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
+details.guide summary{color:var(--accent);font-weight:600;font-size:14px}
+details.guide ol{margin:12px 0 0;padding-left:20px;font-size:14px;line-height:1.55}
+details.guide li{margin-bottom:9px}
+details.guide li b{color:var(--ink)}
+details.guide .hint{margin-top:8px}
 pre.log{margin:8px 0 0;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:10px;
   font-size:12px;white-space:pre-wrap;max-height:220px;overflow:auto}
 
@@ -1242,11 +1248,29 @@ function cardWho(){
   return o.join('');
 }
 
+/* ---- shooting guide -------------------------------------------------------- */
+var GUIDE = [
+  ['Light', 'Blinds closed, ceiling light off. One desk lamp in front of you, a little above eye level, bounced off a wall so it does not glare. Tape its position. This is the big one: lighting alone moved the result by 5 years in your own test shots.'],
+  ['Shave', 'Shave the morning of every session. Stubble changes length daily, and the model looks hardest at exactly that part of the face.'],
+  ['Phone', 'Selfie camera is fine — but prop it, never hold it. A shelf or tripod about arm\u2019s length away, and the 3-second timer. Mark where the phone sits and where you stand.'],
+  ['Framing', 'Your face should fill about 85% of the frame height: top of head near the top edge, chin near the bottom, not touching either. The app will tell you the exact number afterwards.'],
+  ['Background', 'A plain wall or a hung sheet. Slats and patterns throw striped shadows and confuse the face detector.'],
+  ['On the phone', 'Tap and hold on your face until AE/AF LOCK appears, so it stops re-metering between shots. Portrait mode off. Glasses off, hair off the forehead.'],
+  ['The shots', 'Neutral face, mouth closed, look straight at the lens. Take 10 and bin any blinks.'],
+  ['Then', 'Change nothing between sessions. Your first session with this setup becomes the baseline everything after is measured against.']
+];
+function guideHtml(open){
+  var o = ['<details class="guide"'+(open?' open':'')+'><summary>How to set up the shot</summary><ol>'];
+  GUIDE.forEach(function(g){ o.push('<li><b>'+h(g[0])+'</b> '+h(g[1])+'</li>'); });
+  o.push('</ol><p class="hint">Fastest way to dial it in: take a test set, run it, and read the numbers on the result screen. Adjust until it says good capture.</p></details>');
+  return o.join('');
+}
+
 /* ---- 2 · conditions -------------------------------------------------------- */
 var TIPS = {
   grooming:'Same as your very first session, whatever that was.',
   light:'Same lamp, same spot, blinds closed. Not the ceiling light.',
-  camera:'Same phone, main lens, same distance and height. Not the wide lens.',
+  camera:'Selfie camera is fine. Prop the phone, use the timer, and mark where it sits and where you stand.',
   pose:'Look straight ahead, relaxed face, mouth closed.',
   photoday:'No alcohol for two days, decent sleep, not straight after a shower or a workout.',
   skin:'No sunburn, breakout, or allergy flare on the forehead or cheeks.'
@@ -1259,6 +1283,7 @@ function cardConditions(){
     o.push('<div class="cond"><input type="checkbox" class="cl" id="c_'+h(it.key)+'" value="'+h(it.key)+'"'+
            (pre[it.key]?' checked':'')+'><label for="c_'+h(it.key)+'">'+h(it.label)+
            (TIPS[it.key]?'<small>'+h(TIPS[it.key])+'</small>':'')+'</label></div>');});
+  o.push(guideHtml(!S.prev_checklist));
   o.push('<div class="actions">');
   if(S.prev_checklist)
     o.push('<button class="quiet" onclick="sameAsLast()">Same as '+h(niceDate(S.prev_checklist.session_date))+'</button>');
@@ -1273,7 +1298,8 @@ function cardConditions(){
 function cardPhotos(){
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
   var o = ['<div class="card"><h2>Pick the photos</h2>',
-           '<p class="lead">Ten or so from this session, all from the same spot. AirDrop lands them in Downloads.</p>'];
+           '<p class="lead">Ten or so from this session, all from the same spot. AirDrop lands them in Downloads.</p>',
+           guideHtml(false)];
   o.push('<div class="pathbar"><button onclick="goUp()"'+(B.parent?'':' disabled')+' title="up">↑</button>'+
          '<input type="text" id="path" value="'+h(B.path)+'"><button onclick="goPath()">Go</button>'+
          '<button onclick="goHome()">Downloads</button></div>');

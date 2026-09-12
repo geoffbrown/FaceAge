@@ -96,7 +96,7 @@ failure** if any of the following was true:
 - any makeup, tinted product, or unusual grooming state differing from baseline
 - overhead or non-frontal primary light; any light source other than the fixed rig
 - a camera, lens, distance, height, or framing differing from baseline
-  (rear main camera only — never ultrawide)
+  (same camera every time, phone propped at a marked distance — never hand-held, never ultrawide)
 - non-neutral expression, or head not level
 - any §3 photo-day control violated: alcohol within 48h, sodium above cap the prior day,
   under 7h sleep, wrong wake-to-photo interval, hot shower/sauna/hard training within 2h,
@@ -243,3 +243,4 @@ reported alongside the amended one.
 | Date | Section | Change | Reason |
 |---|---|---|---|
 | 2026-09-12 | Throughout | Capture standard now defers to `Younger 2027 — FaceAge Improvement Pro.md` §3 rather than restating it. Added the Harvard paired-photo confound table, makeup and photo-day controls as session-validity conditions, the saliency/overhead-light rationale, the deviation change score as the scored quantity, and a B-anchored calendar replacing fixed 2026 dates. Repeatability study reframed as rehearsal-window prep. | Original draft was written without sight of the Improvement Protocol, which was committed 2026-09-11. It omitted makeup — the single largest confound at 4.37 yr — and all photo-day controls, and assumed a fixed baseline date when B is in fact a live decision. Amended before any study data exists. |
+| 2026-09-12 | §1 | Camera condition reworded from "rear main camera only" to "same camera every time, phone propped at a marked distance — never hand-held, never ultrawide". | The front camera is the only practical option for solo capture. The concern behind "rear main" was perspective distortion of the midface at close range; with the phone propped at a fixed distance that distortion is a constant offset, and the series is a relative trend line (§7), so a constant offset cannot move it. What would move it is distance varying between sessions, which is what the reworded condition rules out. Amended before B is set. |
