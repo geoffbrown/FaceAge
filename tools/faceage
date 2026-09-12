@@ -89,6 +89,59 @@ warn_if_invalidated() {
   warn "It will be scored, but excluded from the pre-registered analysis."
 }
 
+# iPhones write HEIC by default, and the pipeline reads only .jpg/.jpeg/.png.
+# HEIC frames are skipped with a quiet NOTE, so a 10-frame session can silently
+# become a 4-frame one. Convert them instead.
+#
+# Conversion is a FORMAT change, not a pixel adjustment - but the encoder still
+# becomes part of the instrument, so the settings are frozen here and recorded
+# next to the session. Quality is pinned at 100 to keep added JPEG artefacts
+# negligible. Do not change CONVERT_QUALITY once the study has started: every
+# session must pass through the same encoder or they are not comparable.
+#
+# Originals are kept. docs/MAC_APP.md is explicit that photos are saved, not
+# discarded, because the model may change and a weird session needs inspecting.
+CONVERT_QUALITY=100
+
+convert_heic() {
+  local dir="$1"
+  local -a heics=()
+  while IFS= read -r -d '' fpath; do heics+=("$fpath"); done \
+    < <(find "$dir" -maxdepth 1 -type f \( -iname '*.heic' -o -iname '*.heif' \) -print0 2>/dev/null)
+  [[ ${#heics[@]} -eq 0 ]] && return 0
+
+  command -v sips >/dev/null 2>&1 \
+    || die "${#heics[@]} HEIC photo(s) here, but sips is unavailable to convert them.
+Set the phone to Settings > Camera > Formats > Most Compatible so it writes
+JPEG directly, and reshoot. Scoring now would silently ignore those frames."
+
+  local orig="$dir/originals_heic"
+  mkdir -p "$orig"
+  info "Converting ${#heics[@]} HEIC photo(s) to JPEG (quality $CONVERT_QUALITY)..."
+
+  local manifest="$dir/conversion.txt"
+  {
+    printf 'converted_at=%s\n' "$(date +%FT%T)"
+    printf 'tool=sips\nquality=%s\nsource_format=heic\n' "$CONVERT_QUALITY"
+    printf 'note=format conversion only; no tonal or geometric adjustment\n'
+  } > "$manifest"
+
+  local f base out
+  for f in "${heics[@]}"; do
+    base="$(basename "${f%.*}")"
+    out="$dir/$base.jpg"
+    if [[ -e "$out" ]]; then
+      warn "  $base.jpg already exists; leaving the HEIC unconverted"
+      continue
+    fi
+    sips -s format jpeg -s formatOptions "$CONVERT_QUALITY" "$f" --out "$out" \
+      >/dev/null 2>&1 || die "sips failed on $f"
+    printf '%s -> %s\n' "$(basename "$f")" "$base.jpg" >> "$manifest"
+    mv "$f" "$orig/"
+  done
+  info "Originals kept in $orig"
+}
+
 ensure_colima() {
   command -v colima >/dev/null || die "colima not installed. Run: brew install colima docker"
   if ! colima status >/dev/null 2>&1; then
@@ -151,11 +204,13 @@ Re-run with --replace to archive them and use this set instead."
     [[ -d "$session_dir" ]] || die "no session folder at $session_dir"
   fi
 
+  check_icloud_stubs "$session_dir"
+  convert_heic "$session_dir"
+
   local n
   n=$(find "$session_dir" "${find_images[@]}" 2>/dev/null | wc -l | tr -d ' ')
   [[ "$n" -gt 0 ]] || die "no .jpg/.jpeg/.png photos in $session_dir"
 
-  check_icloud_stubs "$session_dir"
   warn_if_invalidated "$session"
 
   ensure_colima; ensure_model; ensure_image
@@ -293,6 +348,26 @@ cmd_anchor() {
   info "Anchor $which set to $when"
 }
 
+# Session one's exposure is the baseline every later session is held to.
+baseline_luma() {
+  [[ -f "$HISTORY" ]] || return 0
+  awk -F, 'NR>1 && $12 != "" {print $12; exit}' "$HISTORY"
+}
+
+cmd_preflight() {
+  local session="${1:-$(date +%F)}"
+  local per_image="$RESULTS_DIR/${session}_per_image.csv"
+  [[ -f "$per_image" ]] || die "no QA data for session $session.
+Pre-flight reads the per-image QA the pipeline writes, so run this after
+'faceage run' for now. A detect-only mode that produces QA without a score
+is the next step."
+  local -a b=()
+  local bl; bl="$(baseline_luma)"
+  [[ -n "$bl" ]] && b=(--baseline-luma "$bl")
+  python3 "$REPO/tools/faceage_preflight.py" --per-image "$per_image" \
+    ${b[@]+"${b[@]}"} "${@:2}"
+}
+
 cmd_analysis() {
   [[ -f "$HISTORY" ]] || die "no history yet for subject '$SUBJECT' — run a session first"
   python3 "$REPO/tools/faceage_analysis.py" --results "$RESULTS_DIR" "$@"
@@ -350,6 +425,7 @@ case "$sub" in
   analyse|analyze) cmd_analysis --all "$@" ;;
   invalidate) cmd_invalidate "$@" ;;
   anchor)   cmd_anchor "$@" ;;
+  preflight) cmd_preflight "$@" ;;
   subjects) cmd_subjects ;;
   build)    cmd_build ;;
   doctor)   cmd_doctor ;;
@@ -360,6 +436,7 @@ FaceAge — local scoring pipeline
   faceage run YYYY-MM-DD     score that session folder
   faceage run FOLDER         score a folder of photos directly
   faceage run FILE...        stage those photos into today's session and score
+  faceage preflight [DATE]   what is wrong with the capture, and what to do
   faceage chart              build + open the visual tracker dashboard
   faceage history            print the longitudinal series
 
