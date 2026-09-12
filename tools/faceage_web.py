@@ -153,20 +153,40 @@ def list_people():
     return out
 
 
-def baseline_luma(name):
-    """Session one's mean_luma — the exposure every later session is held to."""
+def baseline_info(name, source=None):
+    """The exposure baseline: the FIRST logged session's mean face-crop
+    brightness (the pipeline's crop_luma_mean, averaged over the session).
+    Every later session is held to it within +/-5.
+
+    With a source, the first logged session shot on that camera. The number
+    is only meaningful against the same instrument: a phone baseline says
+    nothing about how bright the Mac's camera should read.
+    """
     hist = os.path.join(results_dir(name), 'faceage_history.csv')
     if not os.path.exists(hist):
         return None
     with open(hist) as fh:
-        for r in csv.DictReader(fh):
-            v = (r.get('mean_luma') or '').strip()
-            if v:
-                try:
-                    return float(v)
-                except ValueError:
-                    return None
+        rows = list(csv.DictReader(fh))
+    rows.sort(key=lambda r: (r.get('session_date') or '').strip())
+    for r in rows:
+        v = (r.get('mean_luma') or '').strip()
+        d = (r.get('session_date') or '').strip()
+        if not v or not d:
+            continue
+        try:
+            luma = float(v)
+        except ValueError:
+            continue
+        src = session_source(name, d)
+        if source and src != source:
+            continue
+        return {'luma': luma, 'date': d, 'source': src}
     return None
+
+
+def baseline_luma(name, source=None):
+    b = baseline_info(name, source)
+    return b['luma'] if b else None
 
 
 HOME = os.path.expanduser('~')
@@ -304,7 +324,7 @@ def session_result(name, date):
     except (ValueError, OSError):
         return None
 
-    base = baseline_luma(name)
+    base = baseline_luma(name, session_source(name, date))
     luma = d.get('luma')
     out = {'mean': d.get('mean'), 'median': d.get('median'), 'std': d.get('std'),
            'n': d.get('n'), 'n_total': d.get('n_total_images'),
@@ -653,8 +673,10 @@ def do_capture(body):
     # halfway still records what was saved and how.
     settings = body.get('settings') if isinstance(body.get('settings'), dict) else {}
     keep = {k: settings.get(k) for k in ('camera', 'width', 'height', 'frame_rate',
-                                          'device_id', 'mirrored', 'quality',
+                                          'device_id', 'mirrored', 'quality', 'crop',
+                                          'saved_width', 'saved_height', 'guide',
                                           'user_agent') if settings.get(k) is not None}
+    frame = body.get('frame') if isinstance(body.get('frame'), dict) else {}
     doc = capture_manifest(name, date) or {
         'source': 'mac-camera', 'session_date': date, 'person': name,
         'frames': []}
@@ -662,7 +684,9 @@ def do_capture(body):
     doc['frames'].append({
         'file': fname, 'batch': batch, 'index': index, 'bytes': len(raw),
         'captured_at': datetime.datetime.now().replace(microsecond=0).isoformat(),
-        'luma': settings.get('luma')})
+        'luma': frame.get('luma', settings.get('luma')),
+        'fill': frame.get('fill'), 'dx': frame.get('dx'), 'dy': frame.get('dy'),
+        'aligned': frame.get('aligned')})
     mp = os.path.join(dest, CAPTURE_MANIFEST)
     with open(mp + '.tmp', 'w') as fh:
         json.dump(doc, fh, indent=2)
@@ -846,6 +870,55 @@ def do_discard(body):
             'removed': moved, 'archived_to': bin_dir}
 
 
+def do_remove(body):
+    """Take a session's row out of the tracker, and nothing else.
+
+    The photos, checklist, summary and per-image QA stay where they are, so
+    the session reads as "scored, not in the tracker" in the app and can be
+    added back. Only the history row goes, and the removal is logged with its
+    reason in removed.csv.
+
+    Same stance as discard on the pre-registration: before B there is no
+    series to bias. After B this is dropping study data after seeing it, which
+    is allowed here rather than pushed somewhere unrecorded, but it is logged
+    and the UI says so. Marking the session invalid with a reason keeps the
+    row and is the cleaner option for a genuine protocol failure.
+    """
+    name = safe_subject(body.get('person'))
+    date = safe_date(body.get('date'))
+    reason = (body.get('reason') or '').strip()[:300].replace(',', ';')
+    res = results_dir(name)
+    hist = os.path.join(res, 'faceage_history.csv')
+    if not session_scored(name, date):
+        raise ValueError('%s is not in the tracker' % date)
+    with open(hist) as fh:
+        rows = list(csv.DictReader(fh))
+        cols = list(rows[0].keys()) if rows else []
+    gone = [r for r in rows if (r.get('session_date') or '').strip() == date]
+    keep = [r for r in rows if (r.get('session_date') or '').strip() != date]
+    tmp = hist + '.tmp'
+    with open(tmp, 'w', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=cols)
+        w.writeheader()
+        w.writerows(keep)
+    os.replace(tmp, hist)
+
+    b = fa_anchors(name).get('B')
+    after_b = bool(b) and datetime.date.fromisoformat(date[:10]) >= b
+    log = os.path.join(res, 'removed.csv')
+    new = not os.path.exists(log)
+    with open(log, 'a', newline='') as fh:
+        if new:
+            fh.write('session,removed_at,mean,after_baseline_anchor,reason\n')
+        fh.write('%s,%s,%s,%s,%s\n' % (
+            date, datetime.datetime.now().replace(microsecond=0).isoformat(),
+            (gone[0].get('mean') or '') if gone else '',
+            'yes' if after_b else 'no', reason or '(none given)'))
+    build_chart(name)
+    return {'ok': True, 'session': date, 'after_baseline_anchor': after_b,
+            'remaining': len(keep)}
+
+
 def do_score(body):
     """Analyse the staged photos. Never writes to the tracker.
 
@@ -986,7 +1059,7 @@ def do_preflight(person, date):
                        'scored (%s), so the last pre-flight describes a '
                        'different set. Score again to refresh it.'
                        % ', '.join(bits)}
-    findings = pf.diagnose(images, baseline_luma(person))
+    findings = pf.diagnose(images, baseline_luma(person, session_source(person, date)))
     return {'available': True, 'n_frames': len(images),
             'verdict': pf.verdict(findings),
             'verdict_text': pf.VERDICT_TEXT[pf.verdict(findings)],
@@ -1078,7 +1151,8 @@ def state(person=None, date=None, browse=None):
                   'capture': capture_manifest(person, date),
                   'source': session_source(person, date),
                   'series_source': series_source(person),
-                  'baseline_luma': baseline_luma(person),
+                  'baseline_luma': baseline_luma(person, session_source(person, date)),
+                  'baseline': baseline_info(person, session_source(person, date)),
                   'preflight': do_preflight(person, date)})
     return s
 
@@ -1192,20 +1266,32 @@ select{padding-right:32px}
 .modes button{flex:1;padding:12px 14px;text-align:left;border-radius:12px;line-height:1.3}
 .modes button.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--card)}
 .modes small{display:block;font-weight:500;color:var(--ink3);font-size:12.5px;margin-top:2px}
-.camwrap{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:16/9;max-width:100%}
-.camwrap video{width:100%;height:100%;object-fit:cover;display:block;transform:scaleX(-1)}
+.camwrap{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:3/4;
+  width:min(100%,400px);margin:0 auto;box-shadow:0 0 0 3px transparent;transition:box-shadow .25s}
+.camwrap video{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.camwrap canvas{width:100%;height:100%;display:block}
 .camwrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.camwrap .dim{fill:rgba(0,0,0,.42);transition:fill .25s}
+.camwrap .oval{stroke:rgba(255,255,255,.75);stroke-dasharray:6 4;transition:stroke .25s}
+.camwrap.near .oval{stroke:#ffcf4d}
+.camwrap.ok .oval{stroke:#4fe08a;stroke-dasharray:none}
+.camwrap.ok .dim{fill:rgba(30,120,60,.35)}
+.camwrap.ok{box-shadow:0 0 0 3px #4fe08a}
 .camwrap .cd{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-  font-size:110px;font-weight:700;color:#fff;text-shadow:0 2px 28px rgba(0,0,0,.7);pointer-events:none}
+  font-size:120px;font-weight:700;color:#fff;text-shadow:0 2px 28px rgba(0,0,0,.7);pointer-events:none}
 .camwrap .flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .3s}
 .camwrap .flash.on{opacity:.65;transition:none}
-.camwrap .msg{position:absolute;left:0;right:0;bottom:0;padding:9px 14px;background:rgba(0,0,0,.55);
-  color:#fff;font-size:14px;text-align:center;font-variant-numeric:tabular-nums}
-.camstats{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;font-size:13.5px;color:var(--ink2);
-  font-variant-numeric:tabular-nums}
+.camwrap .msg{position:absolute;left:0;right:0;bottom:0;padding:10px 14px;background:rgba(0,0,0,.55);
+  color:#fff;font-size:15px;font-weight:600;text-align:center;font-variant-numeric:tabular-nums}
+.camwrap.ok .msg{background:rgba(20,110,55,.8)}
+.camstats{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;font-size:13.5px;color:var(--ink2);
+  font-variant-numeric:tabular-nums;justify-content:center}
 .camstats b{color:var(--ink);font-weight:600}
 .camstats .good{color:var(--good)} .camstats .good b{color:var(--good)}
 .camstats .bad{color:var(--bad)} .camstats .bad b{color:var(--bad)}
+.camopts{display:flex;flex-wrap:wrap;gap:6px 20px;margin:10px 0 14px;font-size:13.5px;color:var(--ink2)}
+.camopts label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.camopts input{accent-color:var(--accent);width:16px;height:16px}
 
 /* progress */
 .prog{margin:8px 0 6px}
@@ -1273,6 +1359,7 @@ pre.log{margin:8px 0 0;padding:10px;background:var(--bg);border:1px solid var(--
 <div id="app"></div>
 <p class="foot" id="foot"></p>
 </div>
+<script src="/static/pico.js"></script>
 <script>
 'use strict';
 var S = null, sel = {}, ui = {browseDir:null, prefill:null, note:null, logOpen:false,
@@ -1486,33 +1573,58 @@ function cardPhotos(){
 }
 function countSel(){ return Object.keys(sel).filter(function(k){return sel[k];}).length; }
 
-/* ---- 3b · the Mac camera ----------------------------------------------------- */
-var SHOTS = 10, SHOT_GAP_MS = 900, COUNTDOWN = 3;
-var CAM = {stream:null, starting:false, running:false, cancel:false, luma:null, w:0, h:0, label:'', tick:null};
+/* ---- 3b · the Mac camera --------------------------------------------------- */
+var SHOTS = 10, SHOT_GAP_MS = 900, COUNTDOWN = 3, HOLD_MS = 1500, WAIT_POS_MS = 3000;
+/* The saved photo is a fixed centre crop of the sensor: two thirds of its height,
+   3:4 portrait. Fixed, so distance stays comparable between sessions; at desk
+   distance it puts the face near 85% of the saved height without leaning in. */
+var CROP = {h:0.667, aspect:0.75};
+/* The pipeline measures the detector box (forehead to chin) against frame height,
+   bar 80%. The live detector reports a face size about 0.89 of that box, measured
+   on the authors’ own acceptable image, so its readings are scaled by this. */
+var PICO_TO_BOX = 1.12;
+/* The detector centres on the eyes and nose, above the middle of the face box,
+   so a box centred in the frame reads as a detection centre near 0.44. */
+var TARGET = {fillMin:0.72, fillMax:0.84, cy:0.44, tolX:0.06, tolY:0.07, lumaTol:5};
+var CAM = {stream:null, starting:false, running:false, luma:null, w:0, h:0, fps:null, id:'', label:'',
+           raf:null, face:null, posOk:false, lumaOk:true, aligned:false, alignedSince:0, guide:'',
+           armed:true, muted:false, classify:null, mem:null, guideErr:null, gray:null, lastFrame:0};
+try { CAM.armed = localStorage.getItem('faceage.autostart') !== 'off';
+      CAM.muted = localStorage.getItem('faceage.sound') === 'off'; } catch(e){}
 
 function cameraSupported(){
   return typeof navigator !== 'undefined' && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
 }
+function now(){ return Date.now(); }
 
-/* Face oval at 85% of frame height, a centre line, and an eye line. The SVG
-   stretches with the video box, so everything is in frame-relative units. */
+/* Face oval, eye line and centre line, in units of the saved 3:4 frame. */
 function overlaySvg(){
-  var cy = 47, ry = 38.25, rx = 27.5, ey = 41;
-  return '<svg viewBox="0 0 160 90" preserveAspectRatio="none">'+
-    '<path fill="rgba(0,0,0,.38)" fill-rule="evenodd" d="M0 0H160V90H0Z '+
-    'M'+(80-rx)+' '+cy+'a'+rx+' '+ry+' 0 1 0 '+(2*rx)+' 0a'+rx+' '+ry+' 0 1 0 '+(-2*rx)+' 0Z"/>'+
-    '<ellipse cx="80" cy="'+cy+'" rx="'+rx+'" ry="'+ry+'" fill="none" stroke="#fff" stroke-width=".6" stroke-dasharray="2 1.5" vector-effect="non-scaling-stroke"/>'+
-    '<line x1="80" y1="'+(cy-ry)+'" x2="80" y2="'+(cy+ry)+'" stroke="rgba(255,255,255,.55)" stroke-width=".4" vector-effect="non-scaling-stroke"/>'+
-    '<line x1="'+(80-rx)+'" y1="'+ey+'" x2="'+(80+rx)+'" y2="'+ey+'" stroke="rgba(255,255,255,.55)" stroke-width=".4" stroke-dasharray="1 1" vector-effect="non-scaling-stroke"/>'+
+  var cx = 60, cy = 80, ry = 67, rx = 52, ey = 62;
+  return '<svg viewBox="0 0 120 160" preserveAspectRatio="none">'+
+    '<path class="dim" fill-rule="evenodd" d="M0 0H120V160H0Z '+
+    'M'+(cx-rx)+' '+cy+'a'+rx+' '+ry+' 0 1 0 '+(2*rx)+' 0a'+rx+' '+ry+' 0 1 0 '+(-2*rx)+' 0Z"/>'+
+    '<ellipse class="oval" cx="'+cx+'" cy="'+cy+'" rx="'+rx+'" ry="'+ry+'" fill="none" stroke-width="2" vector-effect="non-scaling-stroke"/>'+
+    '<line x1="'+cx+'" y1="'+(cy-ry)+'" x2="'+cx+'" y2="'+(cy+ry)+'" stroke="rgba(255,255,255,.5)" stroke-width="1" vector-effect="non-scaling-stroke"/>'+
+    '<line x1="'+(cx-rx)+'" y1="'+ey+'" x2="'+(cx+rx)+'" y2="'+ey+'" stroke="rgba(255,255,255,.5)" stroke-width="1" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>'+
     '</svg>';
+}
+
+function baselineLine(){
+  var b = S.baseline;
+  if(b && b.luma!=null)
+    return 'Brightness baseline for this camera: <b>'+Math.round(b.luma)+'</b>, set '+h(niceDate(b.date))+'.';
+  return 'No brightness baseline for this camera yet. This session sets it, so get the light how you want it and keep it that way.';
 }
 
 function cardCamera(){
   var o = ['<div class="card"><h2>Add the photos</h2>',
-           '<p class="lead">Sit where you always sit, fill the oval, eyes on the dotted line. The app counts down and takes '+SHOTS+' photos for you.</p>',
+           '<p class="lead">Sit where you always sit and fill the oval. The frame turns green when you are lined up, then the app counts down and takes '+SHOTS+' photos.</p>',
            modesHtml()];
-  if(S.series_source && S.series_source!=='mac-camera')
-    o.push('<div class="note">Your tracker so far is built from phone photos. Photos from this camera cannot be compared with those, so if you switch, switch for good and treat the first Mac session as your new starting point.</div>');
+  if(S.series_source && S.series_source!=='mac-camera'){
+    o.push('<div class="note">Your tracker so far is built from phone photos, which cannot be compared with this camera. '+
+           (S.has_b ? 'If you switch, switch for good and treat the first Mac session as your new starting point.'
+                    : 'Those were rehearsals: once your baseline anchor is set at the first Mac session, they drop out of the trend.')+'</div>');
+  }
   if(!cameraSupported()){
     o.push('<div class="err">This browser cannot use the camera. Try Safari or Chrome, or import from your phone instead.</div></div>');
     return o.join('');
@@ -1522,10 +1634,13 @@ function cardCamera(){
     o.push('<p class="hint">Allow camera access for 127.0.0.1 in the browser’s address bar or in System Settings › Privacy &amp; Security › Camera, then <button class="quiet" style="padding:2px 6px" onclick="camRetry()">try again</button>.</p></div>');
     return o.join('');
   }
-  o.push('<div class="camwrap" id="camwrap"><video id="cam" autoplay playsinline muted></video>'+overlaySvg()+
+  o.push('<div class="camwrap none" id="camwrap"><video id="cam" autoplay playsinline muted></video><canvas id="camview"></canvas>'+overlaySvg()+
          '<div class="flash" id="camflash"></div><div class="cd" id="camcd"></div>'+
-         '<div class="msg" id="cammsg">'+(CAM.stream?'Line up, then press Start':'Starting the camera…')+'</div></div>');
-  o.push('<div class="camstats"><span id="camlight"></span><span id="camres"></span></div>');
+         '<div class="msg" id="cammsg">'+(CAM.stream?'Looking for your face…':'Starting the camera…')+'</div></div>');
+  o.push('<div class="camstats"><span id="camlight"></span><span id="camfill"></span><span id="camres"></span></div>');
+  o.push('<p class="hint" id="cambase">'+baselineLine()+'</p>');
+  o.push('<div class="camopts"><label><input type="checkbox" id="camauto"'+(CAM.armed?' checked':'')+'> Start automatically when lined up</label>'+
+         '<label><input type="checkbox" id="camsound"'+(CAM.muted?'':' checked')+'> Sound</label></div>');
   o.push(guideHtml(false));
   o.push('<div class="actions">');
   if(S.staged.length)
@@ -1535,27 +1650,59 @@ function cardCamera(){
     o.push('<button class="quiet" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>');
   o.push('<button class="primary" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
          (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button></div>');
-  o.push('<p class="hint">Photos are saved full size, unmirrored, straight into this session’s folder. Keep the Mac in the same place every time; mark it if you can.</p>');
+  o.push('<p class="hint">Photos are saved unmirrored, straight into this session’s folder, as the part of the picture inside the frame above. Keep the Mac in the same place every time; mark it if you can.</p>');
   o.push('</div>');
   return o.join('');
 }
 
 function setMode(m){
   if(ui.photoMode===m) return;
-  ui.photoMode = m; ui.camError = null; render();
+  ui.photoMode = m; ui.camError = null;
+  if(m==='camera') audioUnlock();               // inside the click, so Safari lets sound play later
+  render();
 }
 function camRetry(){ ui.camError = null; render(); }
 
+/* ---- sound: a small confirmation, never required ---- */
+function audioUnlock(){
+  try {
+    var A = (typeof window!=='undefined') && (window.AudioContext || window.webkitAudioContext);
+    if(!A) return;
+    if(!audioUnlock.ctx) audioUnlock.ctx = new A();
+    if(audioUnlock.ctx.resume) audioUnlock.ctx.resume();
+  } catch(e){}
+}
+function beep(notes){
+  if(CAM.muted) return;
+  try {
+    audioUnlock(); var ctx = audioUnlock.ctx; if(!ctx) return;
+    var t = ctx.currentTime;
+    notes.forEach(function(n){               // [frequency, start offset, length]
+      var o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = n[0];
+      g.gain.setValueAtTime(0.0001, t+n[1]);
+      g.gain.exponentialRampToValueAtTime(0.2, t+n[1]+0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+n[1]+n[2]);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(t+n[1]); o.stop(t+n[1]+n[2]+0.05);
+    });
+  } catch(e){}
+}
+var SND = {lined:[[880,0,.12],[1320,.12,.2]], tick:[[660,0,.09]], shutter:[[1500,0,.035]],
+           done:[[784,0,.12],[988,.13,.12],[1175,.26,.3]], lost:[[330,0,.18]]};
+
+/* ---- camera start/stop ---- */
 function camStart(){
   if(CAM.stream || CAM.starting || ui.camError || !cameraSupported()) return;
   CAM.starting = true;
+  loadGuide();
   navigator.mediaDevices.getUserMedia({audio:false,
       video:{facingMode:'user', width:{ideal:1920}, height:{ideal:1080}}})
     .then(function(stream){
       CAM.starting = false; CAM.stream = stream;
       var t = stream.getVideoTracks()[0], st = (t && t.getSettings) ? t.getSettings() : {};
       CAM.label = (t && t.label) || ''; CAM.w = st.width||0; CAM.h = st.height||0; CAM.fps = st.frameRate||null; CAM.id = st.deviceId||'';
-      camAttach(); camTick();
+      camAttach(); camLoop();
     })
     .catch(function(e){
       CAM.starting = false;
@@ -1565,67 +1712,157 @@ function camStart(){
       render();
     });
 }
+function loadGuide(){
+  if(CAM.classify || CAM.guideErr || typeof pico === 'undefined' || typeof fetch !== 'function') { if(typeof pico === 'undefined') CAM.guideErr = 'face guide not loaded'; return; }
+  fetch('/static/facefinder').then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.arrayBuffer(); })
+    .then(function(buf){ CAM.classify = pico.unpack_cascade(new Int8Array(buf)); CAM.mem = pico.instantiate_detection_memory(3); })
+    .catch(function(e){ CAM.guideErr = 'face guide unavailable ('+e.message+')'; });
+}
 function camAttach(){
   var v = document.getElementById('cam');
   if(!v || !CAM.stream) return;
   if(v.srcObject !== CAM.stream){ v.srcObject = CAM.stream; if(v.play) { var p = v.play(); if(p && p.catch) p.catch(function(){}); } }
-  var wrap = document.getElementById('camwrap');
-  if(wrap && CAM.w && CAM.h) wrap.style.aspectRatio = CAM.w+' / '+CAM.h;
-  var m = document.getElementById('cammsg'); if(m && !CAM.running) m.textContent = 'Line up, then press Start';
   var b = document.getElementById('camstart'); if(b && !CAM.running) b.disabled = false;
   var r = document.getElementById('camres'); if(r) r.innerHTML = CAM.w ? h(CAM.label||'camera')+' · <b>'+CAM.w+'×'+CAM.h+'</b>' : '';
+  var a = document.getElementById('camauto'); if(a) a.onchange = function(){ CAM.armed = a.checked; try{ localStorage.setItem('faceage.autostart', a.checked?'on':'off'); }catch(e){} };
+  var s = document.getElementById('camsound'); if(s) s.onchange = function(){ CAM.muted = !s.checked; try{ localStorage.setItem('faceage.sound', s.checked?'on':'off'); }catch(e){} if(s.checked) beep(SND.tick); };
 }
 function camStop(){
-  if(CAM.tick){ clearTimeout(CAM.tick); CAM.tick = null; }
+  if(CAM.raf && typeof cancelAnimationFrame === 'function'){ cancelAnimationFrame(CAM.raf); }
+  CAM.raf = null;
   if(CAM.stream){ CAM.stream.getTracks().forEach(function(t){ t.stop(); }); }
-  CAM.stream = null; CAM.starting = false; CAM.running = false; CAM.luma = null;
+  CAM.stream = null; CAM.starting = false; CAM.running = false; CAM.luma = null; CAM.face = null;
+  CAM.posOk = false; CAM.aligned = false;
 }
 
-/* Mean brightness inside the oval, on the same 0–255 scale the analysis
-   reports, refreshed twice a second. A guide for lining up the lamp, not the
-   measurement itself: that comes from the face crop after analysis. */
-function camLuma(){
-  var v = document.getElementById('cam');
-  if(!v || !v.videoWidth || typeof document.createElement !== 'function') return null;
-  var c = camLuma.c || (camLuma.c = document.createElement('canvas'));
-  if(!c.getContext) return null;
-  var W = 64, H = 36; c.width = W; c.height = H;
-  var g = c.getContext('2d', {willReadFrequently:true}); g.drawImage(v, 0, 0, W, H);
-  var d = g.getImageData(0, 0, W, H).data, sum = 0, n = 0;
-  var cx = W/2, cy = H*0.522, rx = W*0.172, ry = H*0.425;
-  for(var y=0;y<H;y++) for(var x=0;x<W;x++){
-    var dx=(x+0.5-cx)/rx, dy=(y+0.5-cy)/ry;
-    if(dx*dx+dy*dy>1) continue;
-    var i=(y*W+x)*4; sum += 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; n++;
-  }
-  return n ? sum/n : null;
+/* The crop of the sensor that becomes the saved photo, in sensor pixels. */
+function cropRect(){
+  var w = CAM.w, hh = CAM.h;
+  var ch = Math.round(hh*CROP.h), cw = Math.round(ch*CROP.aspect);
+  if(cw > w){ cw = w; ch = Math.round(cw/CROP.aspect); }
+  return {x:Math.round((w-cw)/2), y:Math.round((hh-ch)/2), w:cw, h:ch};
 }
-function camTick(){
+
+/* ---- the live loop: draw the crop, find the face, say what to change ---- */
+function camLoop(){
   if(!CAM.stream) return;
-  var L = camLuma(); CAM.luma = L;
-  var el = document.getElementById('camlight');
-  if(el){
-    if(L==null) el.innerHTML = '';
-    else {
-      var s = 'brightness in the oval <b>'+Math.round(L)+'</b>', cls = '';
-      if(S.baseline_luma!=null){
-        var d = L - S.baseline_luma;
-        cls = Math.abs(d) <= 5 ? 'good' : 'bad';
-        s += ' · baseline '+Math.round(S.baseline_luma)+(Math.abs(d)<=5 ? ' ✓' :
-             (d>0 ? ' — too bright, dim the lamp or close the blinds' : ' — too dark, bring the lamp closer'));
-      } else if(L < 70) { cls='bad'; s += ' — dark; add light in front of you'; }
-      else if(L > 190) { cls='bad'; s += ' — very bright; dim it'; }
-      el.className = cls; el.innerHTML = s;
+  var v = document.getElementById('cam'), view = document.getElementById('camview');
+  if(v && view && v.videoWidth && view.getContext){
+    if(!CAM.w){ CAM.w = v.videoWidth; CAM.h = v.videoHeight; }
+    var R = cropRect();
+    var W = 360, H = Math.round(W/CROP.aspect);
+    if(view.width !== W){ view.width = W; view.height = H; }
+    var g = view.getContext('2d');
+    g.save(); g.translate(W, 0); g.scale(-1, 1);            // mirror for the preview only
+    g.drawImage(v, R.x, R.y, R.w, R.h, 0, 0, W, H);
+    g.restore();
+    var t = now();
+    if(t - CAM.lastFrame > 90){ CAM.lastFrame = t; detect(v, R); guidance(); }
+    if(CAM.face){                                             // a light ring on the face it sees
+      var f = CAM.face;
+      g.beginPath(); g.arc((1-f.cx)*W, f.cy*H, f.s*H/2, 0, Math.PI*2);
+      g.strokeStyle = CAM.posOk ? 'rgba(80,220,120,.9)' : 'rgba(255,255,255,.55)'; g.lineWidth = 2; g.stroke();
     }
   }
-  CAM.tick = setTimeout(camTick, 500);
+  if(typeof requestAnimationFrame === 'function') CAM.raf = requestAnimationFrame(camLoop);
 }
 
+function detect(v, R){
+  /* Detect on the whole sensor frame, not the crop: the detector scans square
+     windows, and a well-framed face is wider than the 3:4 crop is. Results are
+     mapped into crop units, which is what the saved photo is measured in. */
+  var Hd = 200, Wd = Math.round(Hd*CAM.w/CAM.h);
+  var c = detect.c || (detect.c = document.createElement('canvas'));
+  if(!c.getContext) return;
+  if(c.width !== Wd || c.height !== Hd){ c.width = Wd; c.height = Hd; }
+  var g = c.getContext('2d', {willReadFrequently:true});
+  g.drawImage(v, 0, 0, Wd, Hd);
+  var d = g.getImageData(0, 0, Wd, Hd).data, gray = new Uint8Array(Wd*Hd);
+  for(var i=0;i<Wd*Hd;i++) gray[i] = (2*d[4*i] + 7*d[4*i+1] + d[4*i+2]) / 10;
+  var k = Hd/CAM.h;                                   // sensor px -> detection px
+  var rx0 = R.x*k, ry0 = R.y*k, rw = R.w*k, rh = R.h*k;
+  CAM.face = null;
+  if(CAM.classify){
+    var dets = pico.run_cascade({pixels:gray, nrows:Hd, ncols:Wd, ldim:Wd}, CAM.classify,
+                                {shiftfactor:0.1, minsize:Math.round(rh*0.3), maxsize:Math.min(Hd, Wd), scalefactor:1.1});
+    dets = CAM.mem(dets);
+    dets = pico.cluster_detections(dets, 0.2).filter(function(x){ return x[3] > 30; })
+              .sort(function(a,b){ return b[3]-a[3]; });
+    if(dets.length){
+      var b = dets[0];                                // [row, col, size, score]
+      CAM.face = {cy:(b[0]-ry0)/rh, cx:(b[1]-rx0)/rw, s:b[2]/rh, q:b[3]};
+    }
+  }
+  // brightness on the face (inside the ring) or, without a face, the oval
+  var f = CAM.face;
+  var cx = f ? rx0 + f.cx*rw : rx0 + rw/2, cy = f ? ry0 + f.cy*rh : ry0 + rh*0.5;
+  var r = f ? f.s*rh*0.42 : rh*0.42, rxx = f ? r : rw*0.43;
+  var sum = 0, n = 0;
+  var y0 = Math.max(0, Math.floor(cy-r)), y1 = Math.min(Hd, Math.ceil(cy+r));
+  var x0 = Math.max(0, Math.floor(cx-rxx)), x1 = Math.min(Wd, Math.ceil(cx+rxx));
+  for(var y=y0;y<y1;y++) for(var x=x0;x<x1;x++){
+    var dx=(x+0.5-cx)/rxx, dy=(y+0.5-cy)/r;
+    if(dx*dx+dy*dy>1) continue;
+    sum += gray[y*Wd+x]; n++;
+  }
+  CAM.luma = n ? sum/n : null;
+}
+
+function guidance(){
+  var f = CAM.face, msg, state, wasAligned = CAM.aligned;
+  var base = (S.baseline && S.baseline.luma!=null) ? S.baseline.luma : null;
+  var L = CAM.luma, lumaMsg = '', lumaCls = '';
+  if(L!=null){
+    if(base!=null){
+      var dl = L - base;
+      CAM.lumaOk = Math.abs(dl) <= TARGET.lumaTol;
+      lumaCls = CAM.lumaOk ? 'good' : 'bad';
+      lumaMsg = CAM.lumaOk ? '' : (dl>0 ? 'a bit bright: dim the lamp or move it back' : 'a bit dark: bring the lamp closer or turn it up');
+    } else {
+      CAM.lumaOk = L >= 70 && L <= 190;
+      lumaCls = CAM.lumaOk ? '' : 'bad';
+      lumaMsg = CAM.lumaOk ? '' : (L < 70 ? 'dark: put more light on your face' : 'very bright: dim it');
+    }
+  }
+  if(!f){
+    CAM.posOk = false; state = 'none';
+    msg = CAM.guideErr ? 'Face guide unavailable. Line up with the oval by eye.' : 'Looking for your face…';
+  } else {
+    var dx = f.cx - 0.5, dy = f.cy - TARGET.cy, fill = f.s;
+    var fixes = [];
+    if(fill < TARGET.fillMin) fixes.push(fill < TARGET.fillMin-0.12 ? 'Come closer' : 'Come a little closer');
+    else if(fill > TARGET.fillMax) fixes.push('Move back a little');
+    if(Math.abs(dx) > TARGET.tolX) fixes.push((1-f.cx) < 0.5 ? 'Move a little to your right' : 'Move a little to your left');
+    if(Math.abs(dy) > TARGET.tolY) fixes.push(dy < 0 ? 'Sit a little lower, or tilt the screen up' : 'Sit up a little, or tilt the screen down');
+    CAM.posOk = !fixes.length;
+    if(fixes.length){ state = 'near'; msg = fixes[0]; }
+    else if(!CAM.lumaOk){ state = 'ok'; msg = 'Position is good. Light is '+lumaMsg+'.'; }
+    else { state = 'ok'; msg = CAM.running ? msg : (CAM.armed ? 'Perfect. Hold still…' : 'Perfect. Press Start.'); }
+  }
+  CAM.aligned = CAM.posOk && CAM.lumaOk;
+  if(CAM.aligned && !wasAligned){ CAM.alignedSince = now(); if(!CAM.running) beep(SND.lined); }
+  if(!CAM.posOk && wasAligned && !CAM.running) beep(SND.lost);
+
+  var wrap = document.getElementById('camwrap'); if(wrap) wrap.className = 'camwrap '+state;
+  if(!CAM.running && msg) camSay(msg);
+  var el = document.getElementById('camlight');
+  if(el){
+    el.className = lumaCls;
+    el.innerHTML = L==null ? '' : 'brightness on your face <b>'+Math.round(L)+'</b>'+
+      (base!=null ? ' · baseline '+Math.round(base)+(CAM.lumaOk?' ✓':'') : '');
+  }
+  var fe = document.getElementById('camfill');
+  if(fe) fe.innerHTML = f ? 'face <b>'+Math.round(f.s*PICO_TO_BOX*100)+'%</b> of frame height' : '';
+
+  if(CAM.aligned && CAM.armed && !CAM.running && CAM.stream && now()-CAM.alignedSince >= HOLD_MS) startCapture();
+}
+
+/* ---- taking the photos ---- */
 function grabFrame(){
-  var v = document.getElementById('cam');
+  var v = document.getElementById('cam'), R = cropRect();
   var c = document.createElement('canvas');
-  c.width = v.videoWidth; c.height = v.videoHeight;
-  c.getContext('2d').drawImage(v, 0, 0);          // raw frame, not the mirrored preview
+  c.width = R.w; c.height = R.h;
+  c.getContext('2d').drawImage(v, R.x, R.y, R.w, R.h, 0, 0, R.w, R.h);   // 1:1 pixels, not mirrored
   return c.toDataURL('image/jpeg', 0.95);
 }
 function camSay(t){ var m = document.getElementById('cammsg'); if(m) m.textContent = t; }
@@ -1641,30 +1878,48 @@ function stamp(){
 
 function startCapture(){
   if(!CAM.stream || CAM.running) return;
-  CAM.running = true; CAM.cancel = false;
+  CAM.running = true;
   var b = document.getElementById('camstart'); if(b){ b.disabled = true; b.textContent = 'Taking photos…'; }
-  var batch = stamp(), saved = 0, n = COUNTDOWN;
+  var batch = stamp(), saved = 0, n = COUNTDOWN, R = cropRect();
   var settings = {camera:CAM.label, width:CAM.w, height:CAM.h, frame_rate:CAM.fps, device_id:CAM.id,
-                  mirrored:false, quality:0.95, user_agent:(typeof navigator!=='undefined'&&navigator.userAgent)||''};
+                  mirrored:false, quality:0.95, crop:{x:R.x, y:R.y, w:R.w, h:R.h, height_frac:CROP.h, aspect:CROP.aspect},
+                  saved_width:R.w, saved_height:R.h, guide:CAM.classify ? 'pico' : 'none',
+                  user_agent:(typeof navigator!=='undefined'&&navigator.userAgent)||''};
   function finish(err){
     CAM.running = false; camCount('');
-    if(err) fail(err);
+    if(err){ fail(err); if(b){ b.disabled = false; b.textContent = 'Try again'; } return; }
+    beep(SND.done); camSay('Done · '+saved+' saved');
     load();                                        // lands on Analyse: staged count comes from disk
   }
-  function shot(i){
-    if(i > SHOTS){ camSay('Done · '+saved+' saved'); return finish(null); }
-    camSay('Hold still · '+i+' of '+SHOTS); camFlash();
-    var img;
+  function abort(){                                // lost the face during the countdown
+    CAM.running = false; camCount(''); beep(SND.lost);
+    camSay('Lost you — line up again'); CAM.alignedSince = now();
+    if(b){ b.disabled = false; b.textContent = S.staged.length ? 'Take '+SHOTS+' more' : 'Start · '+SHOTS+' photos'; }
+  }
+  function shot(i, waited){
+    if(i > SHOTS) return finish(null);
+    if(!CAM.posOk && CAM.face && (waited||0) < WAIT_POS_MS){     // wait for them to settle, briefly
+      camSay('Hold still · lining up '+i+' of '+SHOTS);
+      return setTimeout(function(){ shot(i, (waited||0)+100); }, 100);
+    }
+    camSay('Hold still · '+i+' of '+SHOTS); camFlash(); beep(SND.shutter);
+    var img, f = CAM.face;
     try { img = grabFrame(); } catch(e){ return finish(e); }
+    var frame = {luma: CAM.luma!=null ? Math.round(CAM.luma*10)/10 : null,
+                 fill: f ? Math.round(f.s*PICO_TO_BOX*1000)/1000 : null,
+                 dx: f ? Math.round((f.cx-0.5)*1000)/1000 : null,
+                 dy: f ? Math.round((f.cy-TARGET.cy)*1000)/1000 : null,
+                 aligned: !!CAM.posOk};
     api('/api/capture', {person:S.person, date:S.date, batch:batch, index:i, image:img,
-                         settings:Object.assign({luma:CAM.luma!=null?Math.round(CAM.luma*10)/10:null}, settings)})
+                         settings:settings, frame:frame})
       .then(function(j){ saved++; if(j.moved_to_new_take) S.date = j.session;
-                         setTimeout(function(){ shot(i+1); }, SHOT_GAP_MS); })
+                         setTimeout(function(){ shot(i+1, 0); }, SHOT_GAP_MS); })
       .catch(finish);
   }
   function tick(){
-    if(n === 0){ camCount(''); camSay('Hold still'); return shot(1); }
-    camCount(String(n)); camSay('Neutral face, mouth closed, look at the camera'); n--;
+    if(CAM.face && !CAM.posOk) return abort();
+    if(n === 0){ camCount(''); camSay('Hold still'); return shot(1, 0); }
+    camCount(String(n)); beep(SND.tick); camSay('Neutral face, mouth closed, look at the camera'); n--;
     setTimeout(tick, 1000);
   }
   tick();
@@ -1740,7 +1995,9 @@ function cardResult(){
   if(R.n_total && R.n < R.n_total) st.push('<span><b>'+(R.n_total-R.n)+'</b> photo'+((R.n_total-R.n)===1?'':'s')+' unusable</span>');
   if(R.luma!=null){
     var l = 'brightness <b>'+R.luma.toFixed(0)+'</b>';
-    if(R.luma_delta!=null) l += ' ('+(R.luma_delta>0?'+':'')+R.luma_delta.toFixed(0)+' vs your baseline)';
+    if(R.luma_delta!=null) l += ' ('+(R.luma_delta>0?'+':'')+R.luma_delta.toFixed(0)+' vs your baseline'+
+                                (S.baseline&&S.baseline.date?' from '+h(niceDate(S.baseline.date)):'')+')';
+    else if(!S.baseline) l += ' (sets the baseline for this camera)';
     st.push('<span class="'+(R.luma_ok===false?'bad':'')+'">'+l+'</span>');
   }
   o.push('<div class="stats">'+st.join('')+'</div>');
@@ -1761,7 +2018,8 @@ function cardResult(){
   if(S.source && S.series_source && S.source !== S.series_source)
     o.push('<div class="note">This session was shot on '+(S.source==='mac-camera'?'this Mac’s camera':'your phone')+
            ', but your tracker so far is from '+(S.series_source==='mac-camera'?'the Mac’s camera':'phone photos')+
-           '. Adding it would compare two cameras, not two dates.</div>');
+           '. '+(S.has_b ? 'Adding it would compare two cameras, not two dates.'
+                        : 'Those earlier sessions were rehearsals: set your baseline anchor at this session and they drop out of the trend.')+'</div>');
 
   o.push('<div class="actions"><button class="danger" onclick="discard()">Discard this session</button><span class="sp"></span>'+
          '<button class="primary" onclick="addToTracker()">Add to my tracker</button></div>');
@@ -1777,7 +2035,8 @@ function cardDone(R){
          (R.valid?'':' · kept out of the trend line because of the conditions you noted')+'</p></div>'+
          '<div class="actions" style="justify-content:center">'+
          '<a href="/tracker?person='+encodeURIComponent(S.person)+'" target="_blank"><button>View tracker</button></a>'+
-         '<button class="primary" onclick="newSession()">Start a new session</button></div></div>';
+         '<button class="primary" onclick="newSession()">Start a new session</button></div>'+
+         '<p class="hint" style="text-align:center">Changed your mind? <button class="quiet" style="padding:2px 6px" onclick="removeFromTracker()">Remove it from the tracker</button></p></div>';
 }
 
 /* ---- wiring ---------------------------------------------------------------- */
@@ -1858,6 +2117,13 @@ function poll(){
 function addToTracker(){
   api('/api/add', {person:S.person, date:S.date}).then(function(){ load(); }).catch(fail);
 }
+function removeFromTracker(){
+  var msg = 'Remove '+niceDate(S.date)+' from the tracker? The photos and result stay; only the tracker row goes, and the removal is logged.';
+  if(S.has_b) msg += '\n\nThis session is after your baseline anchor, so it is study data. Removing it after seeing the number is the thing the rules warn about; marking it invalid with a reason is the cleaner path.';
+  if(!confirm(msg)) return;
+  var reason = prompt('Why? (kept in the log)', '') || '';
+  api('/api/remove', {person:S.person, date:S.date, reason:reason}).then(function(){ load(); }).catch(fail);
+}
 function discard(){
   var msg = 'Start over? The photos, answers and result for this session move to discarded/ (nothing is deleted).';
   if(!confirm(msg)) return;
@@ -1879,6 +2145,12 @@ load();
 # HTTP
 # ----------------------------------------------------------------------------
 
+# Vendored, served from tools/web. pico.js (MIT, Nenad Markus) is a tiny
+# pure-JS face detector: it gives the live framing guide something to measure
+# without any network or native dependency.
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+STATIC = {'pico.js': 'application/javascript', 'facefinder': 'application/octet-stream'}
+
 ROUTES_POST = {
     '/api/person': do_create_person,
     '/api/import': do_import,
@@ -1889,6 +2161,7 @@ ROUTES_POST = {
     '/api/reshoot': do_reshoot,
     '/api/discard': do_discard,
     '/api/add': do_add,
+    '/api/remove': do_remove,
     '/api/person/rename': do_rename,
 }
 
@@ -1937,6 +2210,12 @@ class Handler(BaseHTTPRequestHandler):
                                         q.get('browse') or None))
             if path == '/api/job':
                 return self._json(JOB.snapshot())
+            if path.startswith('/static/'):
+                name = path[len('/static/'):]
+                if name not in STATIC:
+                    return self._json({'error': 'not found'}, 404)
+                with open(os.path.join(WEB_DIR, name), 'rb') as fh:
+                    return self._send(200, fh.read(), STATIC[name])
             if path == '/tracker':
                 person = safe_subject(q.get('person'))
                 out = build_chart(person)
