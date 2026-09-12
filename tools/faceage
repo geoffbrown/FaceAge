@@ -119,7 +119,7 @@ JPEG directly, and reshoot. Scoring now would silently ignore those frames."
   mkdir -p "$orig"
   info "Converting ${#heics[@]} HEIC photo(s) to JPEG (quality $CONVERT_QUALITY)..."
 
-  local manifest="$dir/conversion.txt"
+  local manifest="$orig/conversion.txt"
   {
     printf 'converted_at=%s\n' "$(date +%FT%T)"
     printf 'tool=sips\nquality=%s\nsource_format=heic\n' "$CONVERT_QUALITY"

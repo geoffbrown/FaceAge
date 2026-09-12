@@ -817,6 +817,7 @@ pre.log{background:var(--s1);border:1px solid var(--bd);border-radius:7px;
 .rmeta{display:flex;flex-wrap:wrap;gap:14px;margin-top:7px;font-size:12.5px;
   color:var(--t2);font-variant-numeric:tabular-nums}
 .rmeta .bad{color:var(--er)}
+.oneoff{display:block;margin-top:10px;font-size:12.5px;color:var(--t2)}
 .done{margin-top:9px;font-weight:600;font-size:13px}
 .done.good{color:var(--ok)} .done.bad{color:var(--er)}
 details summary{cursor:pointer;font-size:12.5px;margin-top:8px}
@@ -882,8 +883,6 @@ function render(){
   o.push('</select>');
   o.push('<input id="newname" placeholder="new person" size="12">');
   o.push('<button onclick="addPerson()">Add</button>');
-  o.push('<span style="flex:1"></span>');
-  o.push('<label class="muted"><input type="checkbox" id="oneoff"> one-off (score only, no series)</label>');
   o.push('</div>');
   o.push('<div class="note">Each person has their own series, exposure baseline and chart. '+
          'There is no combined view: different cameras and rooms move FaceAge by more than any '+
@@ -1016,10 +1015,20 @@ function render(){
     o.push(details(j.log));
   } else {
     o.push('<div class="row"><button class="primary" id="scorebtn"'+
-           (blocked?' disabled':'')+' onclick="score()">Score session</button>');
+           (blocked?' disabled':'')+' onclick="score()">'+
+           (S.oneoff?'Score only':'Score and add to series')+'</button>');
     if(blocked) o.push('<span class="muted">Import photos first.</span>');
-    else if(!cl) o.push('<span class="muted">Needs the checklist, unless one-off.</span>');
+    else if(!cl && !S.oneoff) o.push('<span class="muted">Needs the checklist.</span>');
     o.push('</div>');
+    o.push('<label class="oneoff"><input type="checkbox" id="oneoff"'+
+           (S.oneoff?' checked':'')+'> Just tell me the number \u2014 do not add '+
+           'this to the series</label>');
+    o.push('<div class="note">'+(S.oneoff
+        ? 'Nothing will be written to the series or the chart. Use this to see '+
+          'what a set scores without committing it.'
+        : 'This writes a row to the series and it appears on the chart. Whether '+
+          'the pre-registered analysis counts it is decided by the checklist, '+
+          'before the number exists \u2014 not afterwards.')+'</div>');
     var R = S.result;
     if(R && R.mean != null){
       o.push('<div class="result">');
@@ -1101,6 +1110,8 @@ function wire(){
     S.date = d.value; S.prefill = null; S.reopen = false; sel = {}; load(); };
   document.querySelectorAll('.ib').forEach(function(c){
     c.onchange = function(){ sel[c.value] = c.checked; };});
+  var oo = document.getElementById('oneoff');
+  if(oo) oo.onchange = function(){ S.oneoff = oo.checked; render(); };
   var det = document.getElementById('logdet');
   if(det) det.addEventListener('toggle', function(){ logOpen = det.open; });
   document.querySelectorAll('button.dir').forEach(function(b){
@@ -1172,8 +1183,7 @@ function saveChecklist(){
 }
 
 function score(){
-  var one = (document.getElementById('oneoff')||{}).checked || false;
-  api('/api/score', {person:S.person, date:S.date, oneoff:one})
+  api('/api/score', {person:S.person, date:S.date, oneoff:!!S.oneoff})
     .then(function(){ poll(); }).catch(function(e){ err(e.message); });
 }
 
