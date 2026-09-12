@@ -55,7 +55,9 @@ PORT = int(os.environ.get('FACEAGE_PORT', '7860'))
 HOST = '127.0.0.1'          # not configurable, deliberately
 
 NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,40}$')
-DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+# A session label is a date, optionally with a take letter: 2026-09-12b.
+# A reshoot is a NEW take, not an overwrite -- see next_take().
+DATE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})([b-z])?$')
 IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.heic', '.heif')
 
 sys.path.insert(0, HERE)
@@ -88,13 +90,33 @@ def safe_subject(name):
 
 
 def safe_date(d):
-    if not d or not DATE_RE.match(d):
-        raise ValueError('invalid session date (YYYY-MM-DD)')
+    m = DATE_RE.match(d or '')
+    if not m:
+        raise ValueError('invalid session (YYYY-MM-DD, optionally with a take '
+                         'letter like 2026-09-12b)')
     try:
-        datetime.date.fromisoformat(d)
+        datetime.date.fromisoformat(m.group(1))
     except ValueError:
         raise ValueError('invalid session date')
     return d
+
+
+def next_take(name, date):
+    """The next unused take letter for this calendar day.
+
+    A reshoot is its own session: its own photos, its own checklist, its own
+    score. The take that failed keeps its recorded failure and stays excluded,
+    which is what §1 asks for -- nothing is rewritten after the fact. The
+    analysis keys sessions by date[:10], so takes sit on the same day.
+    """
+    day = DATE_RE.match(safe_date(date)).group(1)
+    for suffix in [''] + [chr(c) for c in range(ord('b'), ord('z') + 1)]:
+        label = day + suffix
+        if not os.path.isdir(session_dir(name, label)) \
+                and not session_scored(name, label) \
+                and read_checklist(name, label) is None:
+            return label
+    raise ValueError('no take letters left for %s' % day)
 
 
 def subj_dir(name):
@@ -338,6 +360,22 @@ def parse_progress(lines):
     return {'phase': phase, 'done': done, 'total': total, 'pct': round(pct, 1)}
 
 
+def estimate_remaining(progress, elapsed, phase_started):
+    """Seconds left, from the rate of the CURRENT phase only.
+
+    Phases run at very different speeds -- face localization dominates -- so
+    extrapolating from the whole run would be wrong every time the phase
+    changes. Needs two completed items before it will guess at all.
+    """
+    done, total = progress.get('done') or 0, progress.get('total') or 0
+    if done < 2 or total <= done or phase_started is None:
+        return None
+    spent = elapsed - phase_started
+    if spent <= 0:
+        return None
+    return int(round((spent / done) * (total - done)))
+
+
 class Job(object):
     """Runs one pipeline invocation and collects its output.
 
@@ -352,13 +390,20 @@ class Job(object):
         self.log = []
         self.rc = None
         self.started = None
+        self._phase = None
+        self._phase_at = None
 
     def snapshot(self):
         with self.lock:
+            elapsed = (time.time() - self.started) if self.started else 0
+            prog = parse_progress(self.log[-60:])
+            if prog['phase'] != self._phase:
+                self._phase, self._phase_at = prog['phase'], elapsed
             return {'running': self.running, 'label': self.label,
                     'rc': self.rc, 'log': self.log[-400:],
-                    'progress': parse_progress(self.log[-60:]),
-                    'elapsed': (time.time() - self.started) if self.started else 0}
+                    'progress': prog,
+                    'eta': estimate_remaining(prog, elapsed, self._phase_at),
+                    'elapsed': elapsed}
 
     def start(self, label, argv, cwd=None):
         with self.lock:
@@ -366,17 +411,44 @@ class Job(object):
                 raise RuntimeError('a job is already running')
             self.running, self.label, self.log, self.rc = True, label, [], None
             self.started = time.time()
+            self._phase, self._phase_at = None, None
 
         def run():
             try:
                 p = subprocess.Popen(argv, cwd=cwd or REPO, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, text=True,
-                                     bufsize=1, env=dict(os.environ,
+                                     stderr=subprocess.STDOUT, text=False,
+                                     bufsize=0, env=dict(os.environ,
                                                          FACEAGE_REPO=REPO,
                                                          FACEAGE_DATA=DATA))
-                for line in p.stdout:
+                # The pipeline prints per-image progress with end='\r', so
+                # iterating lines would block until the phase ended and the
+                # progress would never be seen. Read raw and split on BOTH
+                # terminators, treating \r the way a terminal does: it
+                # overwrites the line rather than adding one.
+                fd = p.stdout.fileno()
+                buf, last_was_cr = '', False
+                while True:
+                    data = os.read(fd, 4096)
+                    if not data:
+                        break
+                    buf += data.decode('utf-8', 'replace')
+                    while True:
+                        m = re.search(r'[\r\n]', buf)
+                        if not m:
+                            break
+                        line = ANSI_RE.sub('', buf[:m.start()])
+                        sep = buf[m.start()]
+                        buf = buf[m.end():]
+                        with self.lock:
+                            if line.strip():
+                                if last_was_cr and self.log:
+                                    self.log[-1] = line
+                                else:
+                                    self.log.append(line)
+                            last_was_cr = (sep == '\r')
+                if buf.strip():
                     with self.lock:
-                        self.log.append(ANSI_RE.sub('', line).rstrip('\n'))
+                        self.log.append(ANSI_RE.sub('', buf))
                 p.wait()
                 rc = p.returncode
             except Exception as exc:                      # noqa: BLE001
@@ -509,6 +581,31 @@ def do_checklist(body):
     return {'ok': True, 'checklist': doc}
 
 
+def do_reshoot(body):
+    """Open a fresh take for the same day."""
+    name = safe_subject(body.get('person'))
+    date = safe_date(body.get('date'))
+    label = next_take(name, date)
+    os.makedirs(session_dir(name, label), exist_ok=True)
+    return {'ok': True, 'session': label}
+
+
+def previous_checklist(name, date):
+    """The most recent checklist before this session, for pre-filling.
+
+    Pre-filled boxes are shown ticked and still have to be submitted, so it is
+    a starting point to review rather than an answer given on your behalf.
+    """
+    d = os.path.join(results_dir(name), 'checklists')
+    if not os.path.isdir(d):
+        return None
+    names = sorted(f[:-5] for f in os.listdir(d) if f.endswith('.json'))
+    earlier = [n for n in names if n < date]
+    if not earlier:
+        return None
+    return read_checklist(name, earlier[-1])
+
+
 def do_score(body):
     name = safe_subject(body.get('person'))
     date = safe_date(body.get('date'))
@@ -633,6 +730,7 @@ def state(person=None, date=None, browse=None):
         s.update({'staged': staged(person, date),
                   'checklist': read_checklist(person, date),
                   'checklist_stale': checklist_stale(person, date),
+                  'prev_checklist': previous_checklist(person, date),
                   'scored': session_scored(person, date),
                   'result': session_result(person, date),
                   'baseline_luma': baseline_luma(person),
@@ -795,10 +893,14 @@ function render(){
 
   if(!S.person){ a.innerHTML = o.join(''); wire(); return; }
 
+  var take = (S.date||'').length > 10 ? S.date.slice(10) : '';
   o.push('<div class="step"><b>'+h(S.person)+'</b> · session <input id="date" type="date" value="'+
-         h(S.date)+'" style="padding:3px 6px"> · '+
+         h((S.date||'').slice(0,10))+'" style="padding:3px 6px">'+
+         (take?' <span class="pill">take '+h(take)+'</span>':'')+' · '+
          S.staged.length+' photo'+(S.staged.length===1?'':'s')+' staged'+
-         (S.scored?' · <span class="pill">scored</span>':'')+'</div>');
+         (S.scored?' · <span class="pill">scored</span>':'')+
+         (S.scored?' <button onclick="reshoot()" style="padding:3px 9px;font-size:12px">Reshoot</button>':'')+
+         '</div>');
 
   // ---- import ----
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
@@ -865,8 +967,10 @@ function render(){
              '<span class="muted">allowed only while unscored</span></div>');
       if(S.reopen){
         S.checklist_items.forEach(function(it){
+          var pre = prefill && prefill[it.key];
           o.push('<div class="chk"><input type="checkbox" class="cl" id="cl_'+h(it.key)+
-                 '" value="'+h(it.key)+'"><label for="cl_'+h(it.key)+'">'+h(it.label)+
+                 '" value="'+h(it.key)+'"'+(pre?' checked':'')+
+                 '><label for="cl_'+h(it.key)+'">'+h(it.label)+
                  '</label></div>');});
         o.push('<div class="row" style="margin-top:9px">');
         o.push('<input id="clnotes" placeholder="notes (optional)" style="flex:1">');
@@ -881,11 +985,17 @@ function render(){
            'protocol failure with that reason — the session still gets scored, '+
            'but is excluded from the analysis.</p>');
     S.checklist_items.forEach(function(it){
+      var pre = prefill && prefill[it.key];
       o.push('<div class="chk"><input type="checkbox" class="cl" id="cl_'+h(it.key)+
-             '" value="'+h(it.key)+'"><label for="cl_'+h(it.key)+'">'+h(it.label)+'</label></div>');});
+             '" value="'+h(it.key)+'"'+(pre?' checked':'')+
+             '><label for="cl_'+h(it.key)+'">'+h(it.label)+'</label></div>');});
     o.push('<div class="row" style="margin-top:9px">');
+    if(S.prev_checklist)
+      o.push('<button onclick="sameAsLast()">Same as '+h(S.prev_checklist.session_date)+'</button>');
     o.push('<input id="clnotes" placeholder="notes (optional)" style="flex:1">');
     o.push('<button class="primary" onclick="saveChecklist()">Record</button></div>');
+    o.push('<div class="note">Ticking copies last session\u2019s answers so you can '+
+           'review them rather than retype them \u2014 they are still yours to submit.</div>');
   }
   o.push('</div>');
 
@@ -899,10 +1009,11 @@ function render(){
            '" style="width:'+(pct===null?100:pct)+'%"></div></div>');
     o.push('<div class="progline"><b>'+h(pr.phase||'Working')+'</b>'+
            (pr.total?(' &middot; '+pr.done+' of '+pr.total):'')+
-           '<span style="flex:1"></span>'+Math.round(j.elapsed)+'s</div>');
+           '<span style="flex:1"></span>'+
+           (j.eta!=null?('~'+fmtSecs(j.eta)+' left &middot; '):'')+
+           fmtSecs(Math.round(j.elapsed))+' elapsed</div>');
     o.push('</div>');
-    o.push('<details><summary class="muted">Details</summary>'+
-           '<pre class="log">'+h(j.log.join('\\n'))+'</pre></details>');
+    o.push(details(j.log));
   } else {
     o.push('<div class="row"><button class="primary" id="scorebtn"'+
            (blocked?' disabled':'')+' onclick="score()">Score session</button>');
@@ -942,8 +1053,7 @@ function render(){
       var ok = (j.rc===0);
       o.push('<div class="done '+(ok?'good':'bad')+'">'+
              (ok?'\u2713 Finished':'\u2717 Failed (exit '+j.rc+')')+'</div>');
-      o.push('<details><summary class="muted">Details</summary>'+
-             '<pre class="log">'+h(j.log.join('\\n'))+'</pre></details>');
+      o.push(details(j.log));
     }
   }
   o.push('</div>');
@@ -987,9 +1097,12 @@ function wire(){
   var w = document.getElementById('who');
   if(w) w.onchange = function(){ S.person = w.value; sel = {}; load(); };
   var d = document.getElementById('date');
-  if(d) d.onchange = function(){ S.date = d.value; sel = {}; load(); };
+  if(d) d.onchange = function(){
+    S.date = d.value; S.prefill = null; S.reopen = false; sel = {}; load(); };
   document.querySelectorAll('.ib').forEach(function(c){
     c.onchange = function(){ sel[c.value] = c.checked; };});
+  var det = document.getElementById('logdet');
+  if(det) det.addEventListener('toggle', function(){ logOpen = det.open; });
   document.querySelectorAll('button.dir').forEach(function(b){
     b.onclick = function(){
       var base = S.browse.path;
@@ -1002,6 +1115,32 @@ function pickRecent(){ sel={}; imgs().slice(0,10).forEach(function(f){sel[f.file
 function pickAll(){ sel={}; imgs().forEach(function(f){sel[f.file]=true;}); render(); }
 function pickNone(){ sel={}; render(); }
 function reopen(){ S.reopen = true; render(); }
+function sameAsLast(){
+  S.prefill = (S.prev_checklist && S.prev_checklist.answers) || null;
+  render();
+}
+function reshoot(){
+  api('/api/reshoot', {person:S.person, date:S.date}).then(function(j){
+    S.date = j.session; S.prefill = null; S.reopen = false; sel = {}; load();
+  }).catch(function(e){ err(e.message); });
+}
+
+function fmtSecs(n){
+  if(n==null) return '';
+  if(n < 60) return n+'s';
+  var m = Math.floor(n/60), r = n%60;
+  return m+'m'+(r?' '+r+'s':'');
+}
+
+/* render() rebuilds the DOM on every poll, which would slam <details> shut the
+   instant it was clicked. The open state lives outside the markup and is
+   reapplied, and the toggle writes back to it. */
+var logOpen = false;
+function details(lines){
+  return '<details id="logdet"'+(logOpen?' open':'')+
+         '><summary class="muted">Details</summary>'+
+         '<pre class="log">'+h(lines.join('\\n'))+'</pre></details>';
+}
 
 function browseTo(p){ S.browseDir=p; sel={}; load(); }
 function goPath(){ browseTo(document.getElementById('path').value.trim()); }
@@ -1059,6 +1198,7 @@ ROUTES_POST = {
     '/api/checklist': do_checklist,
     '/api/score': do_score,
     '/api/notes': do_notes,
+    '/api/reshoot': do_reshoot,
 }
 
 
