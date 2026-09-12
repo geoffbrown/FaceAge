@@ -93,11 +93,21 @@ modes, neither of them privacy:
 Required only for a standalone `.app` others can install. Friends cannot be asked to run
 Homebrew, Colima and a 15-minute Rosetta build.
 
-| | Risk |
-|---|---|
-| **FaceAge `.h5` → Core ML** | `coremltools` defaults to float16; **force float32** or the `1e-04` validation tolerance is blown immediately. |
-| **MTCNN parity** | The subtle one. Vision's `VNDetectFaceRectanglesRequest` is not MTCNN. A different face box means a different 160×160 crop means a different FaceAge value. Swapping the detector produces a *different instrument*, not a port, and breaks comparability with the existing series. All three nets (P/R/O) must be converted. |
-| **Re-validation** | Non-negotiable. Both implementations over the same 56 UTK images, held to the same tolerance the Docker pipeline already meets (max abs diff 4.72e-05). |
+| | Risk | Status |
+|---|---|---|
+| **FaceAge `.h5` → Core ML** | `coremltools` defaults to float16; **force float32** or the `1e-04` validation tolerance is blown immediately. | **Converted.** float32 verified at 4.00 bytes/parameter. `tools/coreml/` |
+| **MTCNN parity** | The subtle one. Vision's `VNDetectFaceRectanglesRequest` is not MTCNN. A different face box means a different 160×160 crop means a different FaceAge value. Swapping the detector produces a *different instrument*, not a port, and breaks comparability with the existing series. All three nets (P/R/O) must be converted. | **Not started.** Now the whole of the remaining risk. |
+| **Re-validation** | Non-negotiable. Both implementations over the same 56 UTK images, held to the same tolerance the Docker pipeline already meets (max abs diff 4.72e-05). | **Harness built, not yet run.** Core ML inference is macOS-only, so the number is unmeasured. |
+
+An unbudgeted obstacle turned up and is now solved: the `.h5` cannot be loaded
+by any Python newer than 3.6 — 21 `Lambda` layers carry marshalled py3.6
+bytecode. That also blocked conversion outright, since coremltools cannot
+convert an opaque `Lambda`. Decoded and substituted; see
+`tools/coreml/README.md`.
+
+Regressor parity and MTCNN parity are separated: the regressor is checkable
+with synthetic tensors (no face photographs, nothing biometric in git), while
+MTCNN needs real faces because what is compared is where the box lands.
 
 The Docker pipeline becomes the **reference implementation** rather than the shipped one,
 and `faceage validate` plus `validation/reference/utk_hi-res_qa_res.csv` are already the
