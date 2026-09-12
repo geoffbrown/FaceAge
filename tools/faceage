@@ -368,6 +368,12 @@ is the next step."
     ${b[@]+"${b[@]}"} "${@:2}"
 }
 
+cmd_app() {
+  info "Starting the local UI. Nothing leaves this machine."
+  FACEAGE_DATA="$DATA" FACEAGE_REPO="$REPO" \
+    python3 "$REPO/tools/faceage_web.py" "$@"
+}
+
 cmd_analysis() {
   [[ -f "$HISTORY" ]] || die "no history yet for subject '$SUBJECT' — run a session first"
   python3 "$REPO/tools/faceage_analysis.py" --results "$RESULTS_DIR" "$@"
@@ -426,6 +432,7 @@ case "$sub" in
   invalidate) cmd_invalidate "$@" ;;
   anchor)   cmd_anchor "$@" ;;
   preflight) cmd_preflight "$@" ;;
+  app)      cmd_app "$@" ;;
   subjects) cmd_subjects ;;
   build)    cmd_build ;;
   doctor)   cmd_doctor ;;
@@ -436,6 +443,7 @@ FaceAge — local scoring pipeline
   faceage run YYYY-MM-DD     score that session folder
   faceage run FOLDER         score a folder of photos directly
   faceage run FILE...        stage those photos into today's session and score
+  faceage app                open the local web UI (import, check, score, chart)
   faceage preflight [DATE]   what is wrong with the capture, and what to do
   faceage chart              build + open the visual tracker dashboard
   faceage history            print the longitudinal series
