@@ -241,6 +241,29 @@ def read_checklist(name, date):
         return json.load(fh)
 
 
+def checklist_stale(name, date):
+    """True if photos were staged after the checklist was recorded.
+
+    Not a reason to clear the checklist -- clearing it on import would create a
+    route to re-answer §1 after seeing the number, which is the one thing the
+    ordering exists to prevent. It is a reason to say so on screen.
+    """
+    cl = read_checklist(name, date)
+    if not cl:
+        return False
+    try:
+        rec = datetime.datetime.fromisoformat(cl['recorded_at']).timestamp()
+    except (ValueError, KeyError, TypeError):
+        return False
+    d = session_dir(name, date)
+    if not os.path.isdir(d):
+        return False
+    for f in staged(name, date):
+        if os.stat(os.path.join(d, f)).st_mtime > rec + 1:
+            return True
+    return False
+
+
 def session_scored(name, date):
     hist = os.path.join(results_dir(name), 'faceage_history.csv')
     if not os.path.exists(hist):
@@ -254,7 +277,40 @@ def session_scored(name, date):
 # the one long-running job (scoring)
 # ----------------------------------------------------------------------------
 
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+# The pipeline prints "(3/10) Running the face localization step for ..." and
+# "(2/9) Running the age estimation step for ...". Parsing its own output beats
+# inventing a second source of truth for progress.
+PROG_RE = re.compile(r'\((\d+)/(\d+)\)')
+
+
+def parse_progress(lines):
+    """Phase, position and percent from the tail of the log."""
+    phase, done, total = None, 0, 0
+    for line in lines:
+        low = line.lower()
+        if 'localization step' in low:
+            phase = 'Finding faces'
+        elif 'estimation step' in low:
+            phase = 'Estimating age'
+        elif 'converting' in low and 'heic' in low:
+            phase = 'Converting HEIC'
+        elif 'scoring' in low and 'photo' in low:
+            phase = phase or 'Starting'
+        m = PROG_RE.search(line)
+        if m:
+            done, total = int(m.group(1)), int(m.group(2))
+    pct = (100.0 * done / total) if total else 0.0
+    return {'phase': phase, 'done': done, 'total': total, 'pct': round(pct, 1)}
+
+
 class Job(object):
+    """Runs one pipeline invocation and collects its output.
+
+    The CLI colours its output for a terminal; rendered in HTML those escapes
+    show up as literal [36m noise. They are stripped on the way in.
+    """
+
     def __init__(self):
         self.lock = threading.Lock()
         self.running = False
@@ -267,6 +323,7 @@ class Job(object):
         with self.lock:
             return {'running': self.running, 'label': self.label,
                     'rc': self.rc, 'log': self.log[-400:],
+                    'progress': parse_progress(self.log[-60:]),
                     'elapsed': (time.time() - self.started) if self.started else 0}
 
     def start(self, label, argv, cwd=None):
@@ -285,7 +342,7 @@ class Job(object):
                                                          FACEAGE_DATA=DATA))
                 for line in p.stdout:
                     with self.lock:
-                        self.log.append(line.rstrip('\n'))
+                        self.log.append(ANSI_RE.sub('', line).rstrip('\n'))
                 p.wait()
                 rc = p.returncode
             except Exception as exc:                      # noqa: BLE001
@@ -360,12 +417,20 @@ def do_checklist(body):
             'be deciding after seeing the number (§1). Use the CLI with '
             '--force if the failure was genuinely identified beforehand.' % date)
 
+    # Re-answering BEFORE a score exists is just correcting your own answer --
+    # no number has been seen, so nothing can be motivated by it. Every version
+    # is kept in the JSON with its timestamp, so the record stays auditable.
+    prior = read_checklist(name, date)
+
     failed = [label for key, label in CHECKLIST if not answers.get(key)]
     doc = {'session_date': date, 'person': name,
            'recorded_at': datetime.datetime.now().replace(microsecond=0).isoformat(),
            'answers': {k: bool(answers.get(k)) for k, _ in CHECKLIST},
            'failed': failed, 'notes': notes,
            'valid': not failed}
+    if prior:
+        doc['superseded'] = (prior.get('superseded') or []) + [
+            {k: prior.get(k) for k in ('recorded_at', 'answers', 'failed', 'notes')}]
 
     p = checklist_path(name, date)
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -388,6 +453,25 @@ def do_checklist(body):
             reason = '; '.join(failed)[:300].replace(',', ';')
             with open(vfile, 'a') as fh:
                 fh.write('%s,no,%s,%s\n' % (date, reason, doc['recorded_at']))
+    else:
+        # Corrected to all-pass before any score existed: drop the failure row
+        # so the session is not excluded for an answer that was withdrawn
+        # before it could have been influenced. Only reachable while unscored,
+        # since scoring bars this whole endpoint.
+        vfile = os.path.join(results_dir(name), 'session_validity.csv')
+        if os.path.exists(vfile):
+            with open(vfile) as fh:
+                rows = list(csv.DictReader(fh))
+                cols = list(rows[0].keys()) if rows else []
+            keep = [r for r in rows
+                    if (r.get('session_date') or '').strip() != date]
+            if cols and len(keep) != len(rows):
+                tmp = vfile + '.tmp'
+                with open(tmp, 'w', newline='') as fh:
+                    w = csv.DictWriter(fh, fieldnames=cols)
+                    w.writeheader()
+                    w.writerows(keep)
+                os.replace(tmp, vfile)
     return {'ok': True, 'checklist': doc}
 
 
@@ -414,12 +498,35 @@ def do_score(body):
 
 
 def do_preflight(person, date):
+    """Diagnose the session -- but only if the QA on disk still describes the
+    photos that are staged now.
+
+    Importing more photos after a run leaves the per-image CSV describing the
+    old set. Showing that as if it were current is worse than showing nothing:
+    it is a verdict about photographs that are no longer the session.
+    """
     per_image = os.path.join(results_dir(person), '%s_per_image.csv' % safe_date(date))
     if not os.path.exists(per_image):
         return {'available': False,
                 'why': 'Pre-flight reads the per-image QA the pipeline writes, '
                        'so it becomes available once this session has been run.'}
+
     images = pf.load_per_image(per_image)
+    scored_files = {i['file'] for i in images}
+    current = set(staged(person, date))
+    if current and scored_files != current:
+        added = sorted(current - scored_files)
+        removed = sorted(scored_files - current)
+        bits = []
+        if added:
+            bits.append('%d added' % len(added))
+        if removed:
+            bits.append('%d removed' % len(removed))
+        return {'available': False, 'stale': True,
+                'why': 'The staged photos have changed since this session was '
+                       'scored (%s), so the last pre-flight describes a '
+                       'different set. Score again to refresh it.'
+                       % ', '.join(bits)}
     findings = pf.diagnose(images, baseline_luma(person))
     return {'available': True, 'n_frames': len(images),
             'verdict': pf.verdict(findings),
@@ -491,6 +598,7 @@ def state(person=None, date=None, browse=None):
     if person:
         s.update({'staged': staged(person, date),
                   'checklist': read_checklist(person, date),
+                  'checklist_stale': checklist_stale(person, date),
                   'scored': session_scored(person, date),
                   'baseline_luma': baseline_luma(person),
                   'preflight': do_preflight(person, date)})
@@ -558,6 +666,19 @@ pre.log{background:var(--s1);border:1px solid var(--bd);border-radius:7px;
   padding:9px;font-size:12px;max-height:220px;overflow:auto;margin:8px 0 0;
   white-space:pre-wrap}
 .err{color:var(--er);font-size:13px;margin-top:8px}
+.warn{background:var(--wnbg);border-left:3px solid var(--wn);padding:9px 12px;
+  border-radius:0 7px 7px 0;font-size:13px;margin:8px 0}
+.prog{margin:4px 0 10px}
+.progbar{height:8px;background:var(--bd);border-radius:99px;overflow:hidden}
+.progfill{height:100%;background:var(--ac);border-radius:99px;
+  transition:width .3s ease}
+.progfill.indet{animation:sweep 1.1s ease-in-out infinite;transform-origin:left}
+@keyframes sweep{0%{opacity:.35}50%{opacity:1}100%{opacity:.35}}
+.progline{display:flex;align-items:center;gap:6px;margin-top:7px;font-size:13px;
+  color:var(--t2);font-variant-numeric:tabular-nums}
+.done{margin-top:9px;font-weight:600;font-size:13px}
+.done.good{color:var(--ok)} .done.bad{color:var(--er)}
+details summary{cursor:pointer;font-size:12.5px;margin-top:8px}
 .step{display:flex;align-items:center;gap:7px;margin-bottom:11px;font-size:12px;
   color:var(--t3);flex-wrap:wrap}
 .step b{color:var(--tx)}
@@ -688,6 +809,27 @@ function render(){
            (cl.valid?'<b style="color:var(--ok)">valid</b>':
                      '<b style="color:var(--er)">protocol failure</b>')+'</p>');
     if(!cl.valid) o.push('<p class="muted">Failed: '+cl.failed.map(h).join('; ')+'</p>');
+    if(S.checklist_stale)
+      o.push('<div class="warn">Photos were imported after this was recorded, so '+
+             'it may describe a different capture.'+
+             (S.scored?' This session has been scored, so it cannot be re-answered '+
+                       'now — deciding validity after seeing the number is what §1 '+
+                       'rules out. Shoot a fresh session instead.'
+                     :' Re-answer it below if you reshot.')+'</div>');
+    if(!S.scored){
+      o.push('<div class="row" style="margin-top:8px">'+
+             '<button onclick="reopen()">Re-answer checklist</button>'+
+             '<span class="muted">allowed only while unscored</span></div>');
+      if(S.reopen){
+        S.checklist_items.forEach(function(it){
+          o.push('<div class="chk"><input type="checkbox" class="cl" id="cl_'+h(it.key)+
+                 '" value="'+h(it.key)+'"><label for="cl_'+h(it.key)+'">'+h(it.label)+
+                 '</label></div>');});
+        o.push('<div class="row" style="margin-top:9px">');
+        o.push('<input id="clnotes" placeholder="notes (optional)" style="flex:1">');
+        o.push('<button class="primary" onclick="saveChecklist()">Record</button></div>');
+      }
+    }
   } else if(S.scored){
     o.push('<p class="muted">This session was already scored without a checklist. '+
            'Recording one now would be deciding after seeing the number.</p>');
@@ -705,18 +847,32 @@ function render(){
   o.push('</div>');
 
   // ---- score ----
-  o.push('<div class="card"><h2>3 · Score</h2>');
-  var j = S.job, blocked = !S.staged.length;
+  o.push('<div class="card"><h2>3 \u00b7 Score</h2>');
+  var j = S.job, blocked = !S.staged.length, pr = (j && j.progress) || {};
   if(j.running){
-    o.push('<p class="muted">'+h(j.label)+' — '+Math.round(j.elapsed)+'s</p>');
-    o.push('<pre class="log">'+h(j.log.join('\\n'))+'</pre>');
+    var pct = pr.total ? pr.pct : null;
+    o.push('<div class="prog">');
+    o.push('<div class="progbar"><div class="progfill'+(pct===null?' indet':'')+
+           '" style="width:'+(pct===null?100:pct)+'%"></div></div>');
+    o.push('<div class="progline"><b>'+h(pr.phase||'Working')+'</b>'+
+           (pr.total?(' &middot; '+pr.done+' of '+pr.total):'')+
+           '<span style="flex:1"></span>'+Math.round(j.elapsed)+'s</div>');
+    o.push('</div>');
+    o.push('<details><summary class="muted">Details</summary>'+
+           '<pre class="log">'+h(j.log.join('\\n'))+'</pre></details>');
   } else {
     o.push('<div class="row"><button class="primary" id="scorebtn"'+
            (blocked?' disabled':'')+' onclick="score()">Score session</button>');
     if(blocked) o.push('<span class="muted">Import photos first.</span>');
     else if(!cl) o.push('<span class="muted">Needs the checklist, unless one-off.</span>');
     o.push('</div>');
-    if(j.log.length) o.push('<pre class="log">'+h(j.log.join('\\n'))+'</pre>');
+    if(j.log.length){
+      var ok = (j.rc===0);
+      o.push('<div class="done '+(ok?'good':'bad')+'">'+
+             (ok?'\u2713 Finished':'\u2717 Failed (exit '+j.rc+')')+'</div>');
+      o.push('<details><summary class="muted">Details</summary>'+
+             '<pre class="log">'+h(j.log.join('\\n'))+'</pre></details>');
+    }
   }
   o.push('</div>');
 
@@ -724,7 +880,8 @@ function render(){
   var pfd = S.preflight || {};
   o.push('<div class="card"><h2>4 · Pre-flight — is this capture usable?</h2>');
   if(!pfd.available){
-    o.push('<p class="muted">'+h(pfd.why||'')+'</p>');
+    o.push(pfd.stale ? '<div class="warn">'+h(pfd.why||'')+'</div>'
+                     : '<p class="muted">'+h(pfd.why||'')+'</p>');
   } else {
     o.push('<div class="verdict '+h(pfd.verdict)+'">'+h(pfd.verdict)+' — '+
            h(pfd.verdict_text)+'</div>');
@@ -772,6 +929,7 @@ function imgs(){ return (S.browse && S.browse.images) || []; }
 function pickRecent(){ sel={}; imgs().slice(0,10).forEach(function(f){sel[f.file]=true;}); render(); }
 function pickAll(){ sel={}; imgs().forEach(function(f){sel[f.file]=true;}); render(); }
 function pickNone(){ sel={}; render(); }
+function reopen(){ S.reopen = true; render(); }
 
 function browseTo(p){ S.browseDir=p; sel={}; load(); }
 function goPath(){ browseTo(document.getElementById('path').value.trim()); }

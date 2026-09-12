@@ -379,6 +379,134 @@ class TestPageJavaScript(WebTestCase):
         self.assertIn('Could not load', self.script())
 
 
+class TestStaleness(WebTestCase):
+    """Importing photos changes what a session IS. Pre-flight must stop
+    describing the old set; the checklist must not silently clear."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        self.put_inbox('IMG_1.jpg', 'IMG_2.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                          'files': ['IMG_1.jpg', 'IMG_2.jpg']})
+
+    def per_image(self, files):
+        p = os.path.join(self.w.results_dir('me'), '2026-09-13_per_image.csv')
+        with open(p, 'w') as fh:
+            fh.write('subj_id,file,faceage,status,hard_flags,advisory_flags,'
+                     'confidence,n_faces,source_w,source_h,crop_w,crop_h,'
+                     'crop_luma_mean,crop_luma_std,face_fill_height_frac,'
+                     'face_fill_area_frac,error\n')
+            for f in files:
+                fh.write('%s,%s,44.1,OK,,,0.999,1,3024,4032,420,520,121.3,41.0,'
+                         '0.93,0.51,\n' % (f.split('.')[0], f))
+
+    def test_preflight_available_when_it_matches(self):
+        self.per_image(['IMG_1.jpg', 'IMG_2.jpg'])
+        r = self.w.do_preflight('me', '2026-09-13')
+        self.assertTrue(r['available'])
+
+    def test_preflight_goes_stale_when_photos_are_added(self):
+        self.per_image(['IMG_1.jpg', 'IMG_2.jpg'])
+        self.put_inbox('IMG_3.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                          'files': ['IMG_3.jpg']})
+        r = self.w.do_preflight('me', '2026-09-13')
+        self.assertFalse(r['available'])
+        self.assertTrue(r['stale'])
+        self.assertIn('1 added', r['why'])
+
+    def test_preflight_goes_stale_when_photos_are_removed(self):
+        self.per_image(['IMG_1.jpg', 'IMG_2.jpg', 'IMG_9.jpg'])
+        r = self.w.do_preflight('me', '2026-09-13')
+        self.assertTrue(r['stale'])
+        self.assertIn('1 removed', r['why'])
+
+    def test_checklist_is_not_cleared_by_import(self):
+        """Clearing on import would be a route to re-answer after the number
+        is known. It must survive and be flagged instead."""
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.put_inbox('IMG_4.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                          'files': ['IMG_4.jpg']})
+        self.assertIsNotNone(self.w.read_checklist('me', '2026-09-13'))
+
+    def test_checklist_flagged_stale_after_later_import(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        import time as _t
+        self.put_inbox('IMG_5.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13',
+                          'files': ['IMG_5.jpg']})
+        p = os.path.join(self.w.session_dir('me', '2026-09-13'), 'IMG_5.jpg')
+        os.utime(p, (_t.time() + 60, _t.time() + 60))
+        self.assertTrue(self.w.checklist_stale('me', '2026-09-13'))
+
+    def test_re_answering_while_unscored_keeps_the_old_version(self):
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'answers': a})
+        r = self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                                 'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.assertTrue(r['checklist']['valid'])
+        self.assertEqual(len(r['checklist']['superseded']), 1)
+        self.assertIn('Frontal light', r['checklist']['superseded'][0]['failed'][0])
+
+    def test_corrected_to_pass_clears_the_failure_row(self):
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'answers': a})
+        vfile = os.path.join(self.w.results_dir('me'), 'session_validity.csv')
+        with open(vfile) as fh:
+            self.assertEqual(len(list(csv.DictReader(fh))), 1)
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        with open(vfile) as fh:
+            self.assertEqual(list(csv.DictReader(fh)), [])
+
+    def test_cannot_re_answer_once_scored(self):
+        """The escape hatch closes the moment a number exists."""
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.history('me', '2026-09-13')
+        with self.assertRaises(ValueError):
+            self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                                 'answers': {k: True for k, _ in self.w.CHECKLIST}})
+
+
+class TestProgress(WebTestCase):
+    def test_parses_phase_and_position(self):
+        p = self.w.parse_progress([
+            'Processing 10 image(s) from: /x',
+            '(3/10) Running the face localization step for "IMG_0003.jpg"'])
+        self.assertEqual(p['phase'], 'Finding faces')
+        self.assertEqual((p['done'], p['total']), (3, 10))
+        self.assertEqual(p['pct'], 30.0)
+
+    def test_second_phase_wins(self):
+        p = self.w.parse_progress([
+            '(10/10) Running the face localization step for "a.jpg"',
+            '(2/9) Running the age estimation step for "b"'])
+        self.assertEqual(p['phase'], 'Estimating age')
+        self.assertEqual((p['done'], p['total']), (2, 9))
+
+    def test_heic_phase(self):
+        p = self.w.parse_progress(['Converting 10 HEIC photo(s) to JPEG (quality 100)...'])
+        self.assertEqual(p['phase'], 'Converting HEIC')
+
+    def test_no_progress_lines(self):
+        p = self.w.parse_progress(['something else'])
+        self.assertEqual(p['total'], 0)
+        self.assertEqual(p['pct'], 0.0)
+
+    def test_ansi_is_stripped_from_the_log(self):
+        """Terminal colour codes rendered as HTML show up as literal [36m."""
+        self.assertEqual(
+            self.w.ANSI_RE.sub('', '\x1b[36mConverting 10 HEIC\x1b[0m'),
+            'Converting 10 HEIC')
+
+
 class TestState(WebTestCase):
     def test_state_without_people(self):
         s = self.w.state()
