@@ -488,6 +488,15 @@ def do_import(body):
     if not files:
         raise ValueError('no photos selected')
 
+    # A scored session is closed. Adding photos to one leaves a confusing
+    # half-state -- a checklist describing an earlier capture, a pre-flight
+    # describing earlier photos, a number already in the series. Open the next
+    # take instead, which resets all three by construction.
+    moved_to = None
+    if session_scored(name, date):
+        date = next_take(name, date)
+        moved_to = date
+
     dest = session_dir(name, date)
     os.makedirs(dest, exist_ok=True)
     copied, skipped = [], []
@@ -507,6 +516,7 @@ def do_import(body):
         shutil.copy2(src, target)
         copied.append(f)
     return {'ok': True, 'copied': copied, 'skipped': skipped,
+            'session': date, 'moved_to_new_take': moved_to,
             'staged': staged(name, date)}
 
 
@@ -904,6 +914,10 @@ function render(){
   // ---- import ----
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
   o.push('<div class="card"><h2>1 \u00b7 Import photos</h2>');
+  if(S.movedNote)
+    o.push('<div class="warn">That session had already been scored, so these '+
+           'photos opened a new take: <b>'+h(S.movedNote)+'</b>. It starts with '+
+           'a clean checklist and no result of its own.</div>');
   o.push('<div class="row" style="margin-bottom:8px">');
   o.push('<button onclick="goUp()"'+(B.parent?'':' disabled')+' title="parent folder">\u2191</button>');
   o.push('<input id="path" value="'+h(B.path)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:12.5px">');
@@ -1170,7 +1184,14 @@ function doImport(){
   if(!files.length){ err('Select some photos first.'); return; }
   api('/api/import', {person:S.person, date:S.date, files:files,
                       dir:(S.browse&&S.browse.path)||S.inbox_path})
-    .then(function(){ sel={}; load(); })
+    .then(function(j){
+      sel = {};
+      if(j.moved_to_new_take){
+        S.date = j.session; S.prefill = null; S.reopen = false;
+        S.movedNote = j.moved_to_new_take;
+      }
+      load();
+    })
     .catch(function(e){ err(e.message); });
 }
 
