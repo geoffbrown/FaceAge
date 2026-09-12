@@ -522,7 +522,7 @@ def main():
     if args.history:
         row = {
             'session_date': session_date,
-            'run_timestamp': datetime.datetime.now().replace(microsecond=0).isoformat(),
+            'run_timestamp': datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
             'n': s['n'], 'n_total_images': s['n_total_images'],
             'n_failed': s['n_failed'], 'n_flagged': s['n_flagged'],
             'mean': round(s['mean'], 4) if s['n'] else '',
