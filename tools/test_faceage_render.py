@@ -72,6 +72,14 @@ STATES.forEach(function(st, i){
     if(typeof out !== 'string' || out.length < 20)
       failures.push(st.name + ': rendered almost nothing (' +
                     (out ? out.length : 0) + ' chars)');
+    (st.expect || []).forEach(function(sub){
+      if(out.indexOf(sub) === -1)
+        failures.push(st.name + ': expected to contain ' + JSON.stringify(sub));
+    });
+    (st.reject || []).forEach(function(sub){
+      if(out.indexOf(sub) !== -1)
+        failures.push(st.name + ': should NOT contain ' + JSON.stringify(sub));
+    });
   } catch (e) {
     failures.push(st.name + ': ' + (e && e.message ? e.message : String(e)));
   }
@@ -123,8 +131,20 @@ def states():
     return [
         {'name': 'no people', 'state': base_state(people=[], person=None)},
         {'name': 'fresh session', 'state': base_state()},
-        {'name': 'nothing staged', 'state': base_state(staged=[])},
-        {'name': 'checklist recorded', 'state': base_state(checklist=CHECKLIST_DONE)},
+        # The Score button must be disabled for every reason the server would
+        # refuse. An enabled button that says "Needs the checklist" offers an
+        # action that returns 400.
+        {'name': 'nothing staged', 'state': base_state(staged=[]),
+         'expect': ['id="scorebtn" disabled', 'Import photos first']},
+        {'name': 'staged but no checklist', 'state': base_state(),
+         'expect': ['id="scorebtn" disabled', 'Record the checklist above first']},
+        {'name': 'no checklist but one-off ticked',
+         'state': base_state(oneoff=True),
+         'expect': ['id="scorebtn"', 'Score only'],
+         'reject': ['id="scorebtn" disabled']},
+        {'name': 'checklist recorded', 'state': base_state(checklist=CHECKLIST_DONE),
+         'expect': ['Score and add to series'],
+         'reject': ['id="scorebtn" disabled']},
         {'name': 'checklist failed', 'state': base_state(checklist=CHECKLIST_FAIL)},
         {'name': 'checklist stale, unscored',
          'state': base_state(checklist=CHECKLIST_DONE, checklist_stale=True)},

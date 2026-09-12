@@ -1156,7 +1156,12 @@ function render(){
 
   // ---- score ----
   o.push('<div class="card"><h2>3 \u00b7 Score</h2>');
-  var j = S.job, blocked = !S.staged.length, pr = (j && j.progress) || {};
+  /* The button must be disabled for every reason the server would refuse, or
+     it offers an action that returns 400. A one-off needs no checklist. */
+  var j = S.job, pr = (j && j.progress) || {};
+  var noPhotos = !S.staged.length;
+  var needsChecklist = !cl && !S.oneoff;
+  var blocked = noPhotos || needsChecklist;
   if(j.running){
     var pct = pr.total ? pr.pct : null;
     o.push('<div class="prog">');
@@ -1173,8 +1178,10 @@ function render(){
     o.push('<div class="row"><button class="primary" id="scorebtn"'+
            (blocked?' disabled':'')+' onclick="score()">'+
            (S.oneoff?'Score only':'Score and add to series')+'</button>');
-    if(blocked) o.push('<span class="muted">Import photos first.</span>');
-    else if(!cl && !S.oneoff) o.push('<span class="muted">Needs the checklist.</span>');
+    if(noPhotos) o.push('<span class="muted">Import photos first.</span>');
+    else if(needsChecklist)
+      o.push('<span class="muted">Record the checklist above first \u2014 or tick '+
+             'the box below to score without adding to the series.</span>');
     o.push('</div>');
     o.push('<label class="oneoff"><input type="checkbox" id="oneoff"'+
            (S.oneoff?' checked':'')+'> Just tell me the number \u2014 do not add '+
