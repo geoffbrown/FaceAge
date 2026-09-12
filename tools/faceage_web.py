@@ -1259,6 +1259,7 @@ button.quiet:hover:not(:disabled){background:var(--bg);color:var(--ink)}
 button.danger{color:var(--bad);border-color:transparent;background:transparent;font-weight:500}
 button.danger:hover:not(:disabled){background:var(--bad-bg)}
 button:disabled{opacity:.45;cursor:not-allowed}
+button.inline{padding:0 2px;font-size:inherit;color:var(--accent);font-weight:500;border:0;background:none;text-decoration:underline}
 input[type=text],select{font:inherit;padding:10px 12px;border-radius:10px;
   border:1px solid var(--line);background:var(--bg);color:var(--ink);min-width:0}
 select{padding-right:32px}
@@ -1376,6 +1377,25 @@ pre.log{margin:8px 0 0;padding:10px;background:var(--bg);border:1px solid var(--
 .find .fl{color:var(--ink3);font-size:12.5px}
 .note{margin-top:14px;padding:11px 14px;border-radius:10px;background:var(--warn-bg);font-size:13.5px}
 .note.ok{background:var(--good-bg)}
+.result .rhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.result .rhead .verdict{margin:0}
+.rmeta{color:var(--ink3);font-size:13px}
+.result .big{margin:6px 0 14px}
+.result h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);margin:18px 0 6px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:16px}
+.fact{padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.fact b{display:block;font-size:20px;font-weight:700;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.fact span{font-size:12.5px;color:var(--ink3)}
+.fact.bad b{color:var(--bad)} .fact.good b{color:var(--good)}
+details.notes{margin-top:14px}
+details.notes summary{font-weight:600;color:var(--ink2)}
+details.notes .note{margin-top:8px}
+.note.info{background:var(--bg);border:1px solid var(--line)}
+.cta{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+.cta .primary{padding:14px 26px;font-size:16px;border-radius:12px}
+.cta a{text-decoration:none}
+.minor{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
+.minor button{padding:8px 10px;font-size:13px}
 .done-big{text-align:center;padding:12px 0 6px}
 .done-big .tick{width:56px;height:56px;border-radius:50%;background:var(--good-bg);color:var(--good);
   display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;margin-bottom:12px}
@@ -1396,7 +1416,7 @@ pre.log{margin:8px 0 0;padding:10px;background:var(--bg);border:1px solid var(--
 <script>
 'use strict';
 var S = null, sel = {}, ui = {browseDir:null, prefill:null, note:null, logOpen:false,
-                             photoMode:'import', camError:null};
+                             photoMode:'camera', camError:null};
 
 var STEPS = ['Who','Conditions','Photos','Analyse','Result'];
 
@@ -1561,20 +1581,14 @@ function cardConditions(){
 }
 
 /* ---- 3 · photos ------------------------------------------------------------ */
-function modesHtml(){
-  var cam = ui.photoMode==='camera';
-  return '<div class="modes">'+
-    '<button class="'+(cam?'':'on')+'" onclick="setMode(\'import\')">Import from my phone<small>Photos you already took, AirDropped to this Mac</small></button>'+
-    '<button class="'+(cam?'on':'')+'" onclick="setMode(\'camera\')">Use this Mac\u2019s camera<small>Live framing guide, 10 photos taken for you</small></button>'+
-    '</div>';
-}
 
 function cardPhotos(){
   if(ui.photoMode==='camera') return cardCamera();
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
-  var o = ['<div class="card"><h2>Add the photos</h2>',
-           '<p class="lead">Ten or so from this session, all from the same spot. AirDrop lands them in Downloads.</p>',
-           modesHtml(), guideHtml(false)];
+  var o = ['<div class="card"><h2>Import photos from your phone</h2>',
+           '<p class="lead">Ten or so from one sitting, all from the same spot. AirDrop lands them in Downloads. '+
+           '<button class="quiet inline" onclick="setMode(\'camera\')">Use this Mac’s camera instead</button></p>',
+           guideHtml(false)];
   o.push('<div class="pathbar"><button onclick="goUp()"'+(B.parent?'':' disabled')+' title="up">↑</button>'+
          '<input type="text" id="path" value="'+h(B.path)+'"><button onclick="goPath()">Go</button>'+
          '<button onclick="goHome()">Downloads</button></div>');
@@ -1607,7 +1621,7 @@ function cardPhotos(){
 function countSel(){ return Object.keys(sel).filter(function(k){return sel[k];}).length; }
 
 /* ---- 3b · the Mac camera --------------------------------------------------- */
-var SHOTS = 10, SHOT_GAP_MS = 900, COUNTDOWN = 3, HOLD_MS = 1500, WAIT_POS_MS = 3000;
+var SHOTS = 10, SHOT_GAP_MS = 700, COUNTDOWN = 3, HOLD_MS = 1500, STABLE_FRAMES = 3, STUCK_MS = 45000;
 /* The saved photo is a fixed centre crop of the sensor: two thirds of its height,
    3:4 portrait. Fixed, so distance stays comparable between sessions; at desk
    distance it puts the face near 85% of the saved height without leaning in. */
@@ -1618,7 +1632,9 @@ var CROP = {h:0.667, aspect:0.75};
 var PICO_TO_BOX = 1.12;
 /* The detector centres on the eyes and nose, above the middle of the face box,
    so a box centred in the frame reads as a detection centre near 0.44. */
-var TARGET = {fillMin:0.72, fillMax:0.84, cy:0.44, tolX:0.06, tolY:0.07, lumaTol:5};
+/* fillMin carries margin above the pipeline bar of 80%: a live estimate is
+   not the measurement, and a frame under the bar is a frame set aside. */
+var TARGET = {fillMin:0.76, fillMax:0.86, cy:0.44, tolX:0.06, tolY:0.07, lumaTol:5};
 var CAM = {stream:null, starting:false, running:false, luma:null, w:0, h:0, fps:null, id:'', label:'',
            raf:null, face:null, posOk:false, lumaOk:true, aligned:false, alignedSince:0, guide:'',
            armed:true, muted:false, classify:null, mem:null, guideErr:null, gray:null, lastFrame:0};
@@ -1650,16 +1666,15 @@ function baselineLine(){
 }
 
 function cardCamera(){
-  var o = ['<div class="card"><h2>Add the photos</h2>',
-           '<p class="lead">Sit where you always sit and fill the oval. The frame turns green when you are lined up, then the app counts down and takes '+SHOTS+' photos.</p>',
-           modesHtml()];
+  var o = ['<div class="card"><h2>Take the photos</h2>',
+           '<p class="lead">Sit where you always sit and fill the oval. The frame turns green when you are lined up, then the app counts down and takes '+SHOTS+' photos, each one only while you are in position.</p>'];
   if(S.series_source && S.series_source!=='mac-camera'){
     o.push('<div class="note">Your tracker so far is built from phone photos, which cannot be compared with this camera. '+
            (S.has_b ? 'If you switch, switch for good and treat the first Mac session as your new starting point.'
                     : 'Those were rehearsals: once your baseline anchor is set at the first Mac session, they drop out of the trend.')+'</div>');
   }
   if(!cameraSupported()){
-    o.push('<div class="err">This browser cannot use the camera. Try Safari or Chrome, or import from your phone instead.</div></div>');
+    o.push('<div class="err">This browser cannot use the camera. Try Safari or Chrome, or <button class="quiet inline" onclick="setMode(\'import\')">import from your phone</button> instead.</div></div>');
     return o.join('');
   }
   if(ui.camError){
@@ -1681,6 +1696,7 @@ function cardCamera(){
          '<label><input type="checkbox" id="camsound"'+(CAM.muted?'':' checked')+'> Sound</label></div>');
   o.push(guideHtml(false));
   o.push('<p class="hint">Photos are saved unmirrored, straight into this session’s folder, as the part of the picture inside the frame above. Keep the Mac in the same place every time; mark it if you can.</p>');
+  o.push('<p class="hint">Have photos from your phone instead? <button class="quiet inline" onclick="setMode(\'import\')">Import them</button>.</p>');
   o.push('</div>');
   return o.join('');
 }
@@ -1886,11 +1902,13 @@ function guidance(){
     else { state = 'ok'; msg = CAM.running ? msg : (CAM.armed ? 'Perfect. Hold still…' : 'Perfect. Press Start.'); }
   }
   CAM.aligned = CAM.posOk && CAM.lumaOk;
+  CAM.stable = CAM.aligned ? (CAM.stable||0)+1 : 0;       // consecutive aligned readings
+  CAM.guide = msg || '';
   if(CAM.aligned && !wasAligned){ CAM.alignedSince = now(); if(!CAM.running) beep(SND.lined); }
   if(!CAM.posOk && wasAligned && !CAM.running) beep(SND.lost);
 
   var wrap = document.getElementById('camwrap'); if(wrap) wrap.className = 'camwrap '+state;
-  if(!CAM.running && msg) camSay(msg);
+  if(!CAM.running && msg && now() > (CAM.noticeUntil||0)) camSay(msg);   // a notice holds the line for a moment
   var el = document.getElementById('camlight');
   if(el){
     el.className = lumaCls;
@@ -1938,16 +1956,24 @@ function startCapture(){
     beep(SND.done); camSay('Done · '+saved+' saved');
     load();                                        // lands on Analyse: staged count comes from disk
   }
-  function abort(){                                // lost the face during the countdown
+  function abort(why){                             // lost the face during the countdown, or stuck
     CAM.running = false; camCount(''); beep(SND.lost);
-    camSay('Lost you — line up again'); CAM.alignedSince = now();
+    camSay(why || 'Lost you — line up again'); CAM.alignedSince = now(); CAM.noticeUntil = now() + 5000;
+    if(saved) load();                              // frames already saved show up as staged
     if(b){ b.disabled = false; b.textContent = S.staged.length ? 'Take '+SHOTS+' more' : 'Start · '+SHOTS+' photos'; }
   }
-  function shot(i, waited){
+  var started = now();
+  function shot(i){
     if(i > SHOTS) return finish(null);
-    if(!CAM.posOk && CAM.face && (waited||0) < WAIT_POS_MS){     // wait for them to settle, briefly
-      camSay('Hold still · lining up '+i+' of '+SHOTS);
-      return setTimeout(function(){ shot(i, (waited||0)+100); }, 100);
+    /* A frame is taken only while everything is in spec and has been for a
+       few readings. Waiting costs seconds; a frame out of spec costs the
+       session. If it cannot get there, the batch stops rather than saving
+       photos that will be set aside. With the face guide unavailable it
+       shoots on trust. */
+    if(CAM.classify && !(CAM.aligned && CAM.stable >= STABLE_FRAMES)){
+      if(now() - started > STUCK_MS) return abort('Could not keep you in position. Fix the light or framing and try again.');
+      camSay((CAM.guide || 'Line up')+' · '+i+' of '+SHOTS);
+      return setTimeout(function(){ shot(i); }, 100);
     }
     camSay('Hold still · '+i+' of '+SHOTS); camFlash(); beep(SND.shutter);
     var img, f = CAM.face;
@@ -1960,12 +1986,12 @@ function startCapture(){
     api('/api/capture', {person:S.person, date:S.date, batch:batch, index:i, image:img,
                          settings:settings, frame:frame})
       .then(function(j){ saved++; if(j.moved_to_new_take) S.date = j.session;
-                         setTimeout(function(){ shot(i+1, 0); }, SHOT_GAP_MS); })
+                         setTimeout(function(){ shot(i+1); }, SHOT_GAP_MS); })
       .catch(finish);
   }
   function tick(){
-    if(CAM.face && !CAM.posOk) return abort();
-    if(n === 0){ camCount(''); camSay('Hold still'); return shot(1, 0); }
+    // no abort here: if they are not in position when the count ends, shot() waits for them
+    if(n === 0){ camCount(''); camSay('Hold still'); return shot(1); }
     camCount(String(n)); beep(SND.tick); camSay('Neutral face, mouth closed, look at the camera'); n--;
     setTimeout(tick, 1000);
   }
@@ -2014,64 +2040,92 @@ function updateProgress(j){
 }
 
 /* ---- 5 · result ------------------------------------------------------------ */
-var VERDICT_LABEL = {GOOD:'Good capture', CHECK:'Usable, with notes', RESHOOT:'Reshoot recommended'};
+var VERDICT_LABEL = {GOOD:'Good capture', CHECK:'Usable, with notes', RESHOOT:'Shoot again'};
 var VERDICT_ICON  = {GOOD:'✓', CHECK:'!', RESHOOT:'✕'};
 var RECO = {
-  GOOD:   'This looks like a clean session. Add it to your tracker.',
-  CHECK:  'Usable. Read the notes below, then decide.',
-  RESHOOT:'We would skip this one. Fix the items below and shoot again — adding it would put a number you cannot trust into your trend.'
+  GOOD:   'Clean session. Add it to your tracker.',
+  CHECK:  'Usable. Read the notes, then decide.',
+  RESHOOT:'We would skip this one. Fix what is listed and shoot again; adding it puts a number you cannot trust into your trend.'
 };
+
+function conditionsNote(R){
+  if(R.valid) return '';
+  var items = (S.checklist && S.checklist.failed) || [];
+  var shown = items.slice(0,2).map(function(t){ var cut = t.search(/\s*[\x28—]/); return cut > 0 ? t.slice(0, cut) : t; });   // \x28 is an opening bracket
+  return '<div class="note" title="'+h(items.join('; '))+'"><b>Conditions not confirmed</b>'+
+         (items.length ? ' · '+h(shown.join('; '))+(items.length>2 ? ' +'+(items.length-2)+' more' : '') : '')+
+         '. If you add this it shows on the chart but stays out of your trend line.</div>';
+}
 
 function cardResult(){
   if(S.job && S.job.running) return cardProgress();
   var R = S.result;
   if(!R || R.mean == null){
     return '<div class="card"><h2>Analysis did not produce a result</h2>'+
-           '<p class="lead">Usually no face was found in any photo. Check the details, then start over.</p>'+
+           '<p class="lead">Usually no face was found in any photo. Check the details, then shoot again.</p>'+
            (S.job && S.job.log.length ? '<details open><summary>Details</summary><pre class="log">'+h(S.job.log.join('\n'))+'</pre></details>':'')+
-           '<div class="actions"><span class="sp"></span><button class="danger" onclick="discard()">Start over</button></div></div>';
+           '<div class="cta"><button class="primary" onclick="shootAgain()">Shoot again</button>'+
+           '<button class="danger" onclick="discard()">Discard</button></div></div>';
   }
   if(R.logged) return cardDone(R);
 
   var P = S.preflight || {}, v = P.available ? P.verdict : 'CHECK';
-  var o = ['<div class="card">'];
-  o.push('<span class="verdict '+h(v)+'">'+VERDICT_ICON[v]+' '+h(VERDICT_LABEL[v])+'</span>');
-  o.push('<div class="big"><span class="n">'+R.mean.toFixed(1)+'</span><span class="u">FaceAge · average of '+R.n+' photos</span></div>');
-  var st = [];
-  if(R.std!=null) st.push('<span>spread <b>±'+R.std.toFixed(1)+'</b></span>');
-  if(R.n_total && R.n < R.n_total) st.push('<span><b>'+(R.n_total-R.n)+'</b> photo'+((R.n_total-R.n)===1?'':'s')+' unusable</span>');
+  var findings = P.available ? P.findings : [];
+  var fix = findings.filter(function(f){ return f.severity !== 'INFO'; });
+  var info = findings.filter(function(f){ return f.severity === 'INFO'; });
+
+  var o = ['<div class="card result">'];
+  o.push('<div class="rhead"><span class="verdict '+h(v)+'">'+VERDICT_ICON[v]+' '+h(VERDICT_LABEL[v])+'</span>'+
+         '<span class="rmeta">'+h(niceDate(S.date))+(S.source==='mac-camera' ? ' · this Mac’s camera' : (S.source==='import' ? ' · imported photos' : ''))+'</span></div>');
+  o.push('<div class="big"><span class="n">'+R.mean.toFixed(1)+'</span><span class="u">FaceAge</span></div>');
+
+  var facts = [];
+  facts.push('<div class="fact"><b>'+R.n+'</b><span>photo'+(R.n===1?'':'s')+' used'+
+             (R.n_total && R.n < R.n_total ? ' · '+(R.n_total-R.n)+' set aside' : '')+'</span></div>');
+  if(R.std!=null) facts.push('<div class="fact"><b>±'+R.std.toFixed(1)+'</b><span>spread</span></div>');
   if(R.luma!=null){
-    var l = 'brightness <b>'+R.luma.toFixed(0)+'</b>';
-    if(R.luma_delta!=null) l += ' ('+(R.luma_delta>0?'+':'')+R.luma_delta.toFixed(0)+' vs your baseline'+
-                                (S.baseline&&S.baseline.date?' from '+h(niceDate(S.baseline.date)):'')+')';
-    else if(!S.baseline) l += ' (sets the baseline for this camera)';
-    st.push('<span class="'+(R.luma_ok===false?'bad':'')+'">'+l+'</span>');
+    var sub, cls = '';
+    if(R.luma_delta!=null){ sub = (R.luma_delta>0?'+':'')+R.luma_delta.toFixed(0)+' vs baseline'+(S.baseline&&S.baseline.date?' ('+niceDate(S.baseline.date)+')':''); cls = R.luma_ok===false ? ' bad' : ' good'; }
+    else if(!S.baseline) sub = 'sets the baseline for this camera';
+    else sub = 'brightness';
+    facts.push('<div class="fact'+cls+'"><b>'+R.luma.toFixed(0)+'</b><span>brightness · '+h(sub)+'</span></div>');
   }
-  o.push('<div class="stats">'+st.join('')+'</div>');
+  o.push('<div class="facts">'+facts.join('')+'</div>');
   o.push('<div class="reco '+h(v)+'">'+h(RECO[v])+'</div>');
 
-  if(P.available && P.findings.length){
-    P.findings.forEach(function(f){
+  if(fix.length){
+    o.push('<h3>What to fix</h3>');
+    fix.forEach(function(f){
       o.push('<div class="find '+h(f.severity)+'"><div class="w">'+h(f.what)+'</div>'+
              '<p><span class="k">WHY</span>'+h(f.why)+'</p><p><span class="k">DO</span>'+h(f.do)+'</p>'+
              (f.frames&&f.frames.length?'<p class="fl">'+h(f.frames.slice(0,5).join(', '))+(f.frames.length>5?' +'+(f.frames.length-5)+' more':'')+'</p>':'')+
              '</div>');});
   }
-  if(!R.valid)
-    o.push('<div class="note">You noted a problem with the conditions, so if you add this it will show on the chart but stay out of your trend line'+
-           (R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
+
+  var notes = [];
+  notes.push(conditionsNote(R));
   if(R.fellback)
-    o.push('<div class="note">Every photo had something off, so the average used all of them rather than only the clean ones.</div>');
+    notes.push('<div class="note">Every photo had something off, so the average used all of them rather than only the clean ones.</div>');
   if(S.source && S.series_source && S.source !== S.series_source)
-    o.push('<div class="note">This session was shot on '+(S.source==='mac-camera'?'this Mac’s camera':'your phone')+
-           ', but your tracker so far is from '+(S.series_source==='mac-camera'?'the Mac’s camera':'phone photos')+
+    notes.push('<div class="note">Shot on '+(S.source==='mac-camera'?'this Mac’s camera':'your phone')+
+           '; your tracker so far is from '+(S.series_source==='mac-camera'?'the Mac’s camera':'phone photos')+
            '. '+(S.has_b ? 'Adding it would compare two cameras, not two dates.'
                         : 'Those earlier sessions were rehearsals: set your baseline anchor at this session and they drop out of the trend.')+'</div>');
+  info.forEach(function(f){ notes.push('<div class="note info"><b>'+h(f.what)+'</b> '+h(f.do)+'</div>'); });
+  notes = notes.filter(Boolean);
+  if(notes.length){
+    var open = !R.valid || v !== 'GOOD';
+    o.push('<details class="notes"'+(open?' open':'')+'><summary>'+notes.length+' note'+(notes.length===1?'':'s')+'</summary>'+notes.join('')+'</details>');
+  }
 
-  o.push('<div class="actions"><button class="danger" onclick="discard()">Discard this session</button>'+
-         '<button class="quiet" onclick="reveal(\'session\')">Show photos in Finder</button><span class="sp"></span>'+
-         '<button class="primary" onclick="addToTracker()">Add to my tracker</button></div>');
-  o.push('<p class="hint">Photos are never edited. If something is off, change the setup and shoot again.</p>');
+  if(v === 'RESHOOT')
+    o.push('<div class="cta"><button class="primary" onclick="shootAgain()">Shoot again</button>'+
+           '<button onclick="addToTracker()">Add anyway</button></div>');
+  else
+    o.push('<div class="cta"><button class="primary" onclick="addToTracker()">Add to my tracker</button>'+
+           '<button onclick="shootAgain()">Shoot again</button></div>');
+  o.push('<div class="minor"><button class="quiet" onclick="reveal(\'session\')">Show photos in Finder</button>'+
+         '<button class="danger" onclick="discard()">Discard this session</button></div>');
   o.push('</div>');
   return o.join('');
 }
@@ -2081,11 +2135,11 @@ function cardDone(R){
          '<h2>Added to your tracker</h2>'+
          '<p class="lead"><b>'+R.mean.toFixed(1)+'</b> on '+h(niceDate(S.date))+
          (R.valid?'':' · kept out of the trend line because of the conditions you noted')+'</p></div>'+
-         '<div class="actions" style="justify-content:center">'+
-         '<a href="/tracker?person='+encodeURIComponent(S.person)+'" target="_blank"><button>View tracker</button></a>'+
-         '<button onclick="reveal(\'session\')">Show photos in Finder</button>'+
-         '<button class="primary" onclick="newSession()">Start a new session</button></div>'+
-         '<p class="hint" style="text-align:center">Changed your mind? <button class="quiet" style="padding:2px 6px" onclick="removeFromTracker()">Remove it from the tracker</button></p></div>';
+         '<div class="cta">'+
+         '<button class="primary" onclick="newSession()">Start a new session</button>'+
+         '<a href="/tracker?person='+encodeURIComponent(S.person)+'" target="_blank"><button>View tracker</button></a></div>'+
+         '<div class="minor"><button class="quiet" onclick="reveal(\'session\')">Show photos in Finder</button>'+
+         '<button class="quiet" onclick="removeFromTracker()">Remove it from the tracker</button></div></div>';
 }
 
 /* ---- wiring ---------------------------------------------------------------- */
@@ -2168,6 +2222,18 @@ function addToTracker(){
 }
 function reveal(what){
   api('/api/reveal', {person:S.person, date:S.date, what:what}).catch(fail);
+}
+function shootAgain(){
+  /* Discard this session (moved to discarded/, never deleted) and go straight
+     back to the camera with the same conditions answers, so a retake is one
+     click. The discard is logged like any other. */
+  var answers = S.checklist && S.checklist.answers;
+  api('/api/discard', {person:S.person, date:S.date, reason:'shoot again'})
+    .then(function(){
+      sel = {}; ui.prefill = null; ui.photoMode = 'camera'; ui.forcePhotos = false;
+      if(answers) return api('/api/checklist', {person:S.person, date:S.date, answers:answers});
+    })
+    .then(function(){ load(); }).catch(fail);
 }
 function removeFromTracker(){
   var msg = 'Remove '+niceDate(S.date)+' from the tracker? The photos and result stay; only the tracker row goes, and the removal is logged.';

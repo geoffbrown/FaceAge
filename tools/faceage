@@ -387,6 +387,24 @@ cmd_analysis() {
   python3 "$REPO/tools/faceage_analysis.py" --results "$RESULTS_DIR" "$@"
 }
 
+cmd_reset() {
+  # Start fresh. Nothing is deleted: the whole data folder is moved aside with
+  # a timestamp, so it can be looked at or restored later.
+  [[ -d "$DATA" ]] || { info "nothing to reset: $DATA does not exist"; return 0; }
+  local dest="$DATA.archive-$(date +%Y%m%d-%H%M%S)"
+  echo "This moves ALL FaceAge data (every person, every session, the trackers)"
+  echo "  from  $DATA"
+  echo "  to    $dest"
+  echo "Nothing is deleted. Delete the archive yourself once you are sure."
+  if [[ "${1:-}" != "--yes" ]]; then
+    read -r -p "Type yes to continue: " ans
+    [[ "$ans" == "yes" ]] || die "not reset"
+  fi
+  mv "$DATA" "$dest" || die "could not move $DATA"
+  info "moved to $dest"
+  info "Restart 'faceage app' and add yourself again; the first session sets the new baseline."
+}
+
 cmd_subjects() {
   local base="$DATA/subjects"
   [[ -d "$base" ]] || die "no subjects yet — run a session first"
@@ -442,6 +460,7 @@ case "$sub" in
   preflight) cmd_preflight "$@" ;;
   app)      cmd_app "$@" ;;
   subjects) cmd_subjects ;;
+  reset)    cmd_reset "$@" ;;
   build)    cmd_build ;;
   doctor)   cmd_doctor ;;
   *) cat <<USAGE
@@ -464,6 +483,7 @@ FaceAge — local scoring pipeline
   faceage anchor B|R DATE    set the baseline / retest landmark
   faceage anchor             show the anchors currently set
   faceage subjects           list everyone with data on this machine
+  faceage reset              start fresh: move ALL data aside (nothing deleted)
   faceage validate [tol]     re-run validation against the authors' CSV
   faceage build              (re)build the linux/amd64 container image
   faceage doctor             check environment, weights hash, session count
