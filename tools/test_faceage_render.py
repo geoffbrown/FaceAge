@@ -46,7 +46,8 @@ var document = {
     if(!ELS[id]) ELS[id] = new El('div');
     return ELS[id];
   },
-  querySelectorAll: function(){ return []; }
+  querySelectorAll: function(){ return []; },
+  querySelector: function(){ return null; }
 };
 var location = { protocol: 'http:' };
 var window = {};
@@ -69,7 +70,12 @@ STATES.forEach(function(st, i){
     sel = {};
     render();
     var out = document.getElementById('app').innerHTML;
-    if(typeof out !== 'string' || out.length < 20)
+    // the wizard renders into three containers; check all of them
+  out = document.getElementById('app').innerHTML +
+        document.getElementById('rail').innerHTML +
+        document.getElementById('who').innerHTML +
+        document.getElementById('sess').innerHTML;
+  if(typeof out !== 'string' || out.length < 20)
       failures.push(st.name + ': rendered almost nothing (' +
                     (out ? out.length : 0) + ' chars)');
     (st.expect || []).forEach(function(sub){
@@ -92,14 +98,14 @@ console.log('OK');
 def base_state(**kw):
     s = {
         'people': [{'name': 'me', 'sessions': 1, 'logged': 1}],
-        'person': 'me', 'date': '2026-09-12',
+        'person': 'me', 'date': '2026-09-12', 'today': '2026-09-12',
         'inbox_path': '/Users/x/Downloads', 'data_path': '/Users/x/FaceAgeData',
         'browse': {'path': '/Users/x/Downloads', 'parent': '/Users/x',
                    'dirs': ['pics'],
                    'images': [{'file': 'IMG_1.jpg', 'when': '12 Sep 10:00',
                                'heic': False, 'size': 10, 'mtime': 1}],
                    'n_images': 1},
-        'inbox': [], 'staged': ['IMG_1.jpg'],
+        'inbox': [], 'staged': [],
         'checklist_items': [{'key': 'light', 'label': 'Frontal light'},
                             {'key': 'pose', 'label': 'Neutral expression'}],
         'checklist': None, 'checklist_stale': False, 'prev_checklist': None,
@@ -124,86 +130,92 @@ RESULT = {'mean': 45.62, 'median': 45.5, 'std': 1.39, 'n': 14, 'n_total': 14,
           'luma': 133.7, 'baseline_luma': 128.6, 'luma_delta': 5.1,
           'luma_ok': False, 'fellback': True, 'valid': True, 'logged': False,
           'in_series': False, 'has_checklist': True, 'excluded_reason': None}
+RUNNING = {'running': True, 'label': 'Analysing', 'rc': None,
+           'log': ['(3/10) Running the face localization step'],
+           'progress': {'phase': 'Finding faces', 'done': 3, 'total': 10, 'pct': 30.0},
+           'eta': 42, 'elapsed': 18}
+PREFLIGHT_BAD = {'available': True, 'n_frames': 14, 'verdict': 'RESHOOT',
+                 'verdict_text': 'Reshoot before scoring.',
+                 'findings': [{'severity': 'RESHOOT', 'code': 'LUMA_DRIFT',
+                               'what': 'exposure 133.7', 'why': 'lighting',
+                               'do': 'reshoot', 'frames': ['a.jpg', 'b.jpg']}]}
+PREFLIGHT_GOOD = {'available': True, 'n_frames': 10, 'verdict': 'GOOD',
+                  'verdict_text': 'Capture looks good.', 'findings': []}
 
 
 def states():
-    """Every branch of render() that has bitten so far, plus the empty cases."""
+    """One entry per wizard step and per branch that has bitten, with
+    assertions on what the step must and must not show."""
     return [
-        {'name': 'no people', 'state': base_state(people=[], person=None)},
-        {'name': 'fresh session', 'state': base_state()},
-        # The Score button must be disabled for every reason the server would
-        # refuse. An enabled button that says "Needs the checklist" offers an
-        # action that returns 400.
-        {'name': 'nothing staged', 'state': base_state(staged=[]),
-         'expect': ['id="scorebtn" disabled', 'Import photos first']},
-        {'name': 'staged but no checklist', 'state': base_state(),
-         'expect': ['id="scorebtn" disabled', 'Record the checklist above first']},
-        {'name': 'no checklist but one-off ticked',
-         'state': base_state(oneoff=True),
-         'expect': ['id="scorebtn"', 'Score only'],
-         'reject': ['id="scorebtn" disabled']},
-        {'name': 'checklist recorded', 'state': base_state(checklist=CHECKLIST_DONE),
-         'expect': ['Score and add to series'],
-         'reject': ['id="scorebtn" disabled']},
-        {'name': 'checklist failed', 'state': base_state(checklist=CHECKLIST_FAIL)},
-        {'name': 'checklist stale, unscored',
-         'state': base_state(checklist=CHECKLIST_DONE, checklist_stale=True)},
-        {'name': 'checklist stale, scored',
-         'state': base_state(checklist=CHECKLIST_DONE, checklist_stale=True,
-                             scored=True)},
-        {'name': 'reopen with prefill',
-         'state': base_state(checklist=CHECKLIST_FAIL, checklist_stale=True,
-                             reopen=True, prefill={'light': True},
-                             prev_checklist=CHECKLIST_DONE)},
-        {'name': 'prefill offered',
-         'state': base_state(prev_checklist=CHECKLIST_DONE)},
-        {'name': 'job running',
-         'state': base_state(job={'running': True, 'label': 'Scoring',
-                                  'rc': None, 'log': ['(3/10) Running'],
-                                  'progress': {'phase': 'Finding faces',
-                                               'done': 3, 'total': 10,
-                                               'pct': 30.0},
-                                  'eta': 42, 'elapsed': 18})},
-        {'name': 'job running, no counts',
-         'state': base_state(job={'running': True, 'label': 'Scoring',
-                                  'rc': None, 'log': [],
-                                  'progress': {'phase': None, 'done': 0,
-                                               'total': 0, 'pct': 0},
-                                  'eta': None, 'elapsed': 3})},
-        {'name': 'one-off result, addable',
-         'state': base_state(checklist=CHECKLIST_DONE, result=RESULT,
-                             job={'running': False, 'label': '', 'rc': 0,
-                                  'log': ['done'],
-                                  'progress': {'phase': None, 'done': 0,
-                                               'total': 0, 'pct': 0},
-                                  'eta': None, 'elapsed': 20})},
-        {'name': 'one-off result, no checklist',
-         'state': base_state(result=dict(RESULT, has_checklist=False))},
-        {'name': 'logged and in series',
-         'state': base_state(checklist=CHECKLIST_DONE, scored=True,
-                             result=dict(RESULT, logged=True, in_series=True))},
-        {'name': 'logged but invalid',
-         'state': base_state(checklist=CHECKLIST_FAIL, scored=True,
-                             result=dict(RESULT, logged=True, valid=False,
-                                         in_series=False,
-                                         excluded_reason='Frontal light'))},
-        {'name': 'preflight reshoot',
-         'state': base_state(preflight={
-             'available': True, 'n_frames': 14, 'verdict': 'RESHOOT',
-             'verdict_text': 'Reshoot before scoring.',
-             'findings': [{'severity': 'RESHOOT', 'code': 'LUMA_DRIFT',
-                           'what': 'exposure 133.7', 'why': 'lighting',
-                           'do': 'reshoot', 'frames': ['a.jpg', 'b.jpg']}]})},
-        {'name': 'preflight stale',
-         'state': base_state(preflight={'available': False, 'stale': True,
-                                        'why': '2 added'})},
-        {'name': 'take letter', 'state': base_state(date='2026-09-12b')},
-        {'name': 'discard note', 'state': base_state(discardNote='2026-09-12 — photos')},
-        {'name': 'moved note', 'state': base_state(movedNote='2026-09-12b')},
-        {'name': 'one-off checked', 'state': base_state(oneoff=True)},
-        {'name': 'empty browse',
-         'state': base_state(browse={'path': '/x', 'parent': None,
-                                     'dirs': [], 'images': [], 'n_images': 0})},
+        {'name': 'step 0: no people', 'state': base_state(people=[], person=None),
+         'expect': ['Who are we measuring', 'Add'], 'reject': ['Continue</button>']},
+        {'name': 'step 0: pick a person', 'state': base_state(person=None),
+         'expect': ['Who are we measuring', 'Continue']},
+        {'name': 'step 1: conditions', 'state': base_state(),
+         'expect': ['Same setup as last time', 'id="c_light"', 'Continue'],
+         'reject': ['Pick the photos', 'Analyse</button>']},
+        {'name': 'step 1: with prefill offered',
+         'state': base_state(prev_checklist=CHECKLIST_DONE),
+         'expect': ['Same as ']},
+        {'name': 'step 2: photos', 'state': base_state(checklist=CHECKLIST_DONE),
+         'expect': ['Pick the photos', 'Use 0 selected', 'Conditions: <b>all good'],
+         'reject': ['Analyse</button>']},
+        {'name': 'step 2: photos, conditions flagged',
+         'state': base_state(checklist=CHECKLIST_FAIL),
+         'expect': ['Conditions: <b>problem noted']},
+        {'name': 'step 2: empty folder',
+         'state': base_state(checklist=CHECKLIST_DONE,
+                             browse={'path': '/x', 'parent': None, 'dirs': [],
+                                     'images': [], 'n_images': 0}),
+         'expect': ['No photos here']},
+        {'name': 'step 3: ready to analyse',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg', 'b.jpg']),
+         'expect': ['Ready to analyse', 'Analyse</button>', 'Photos: <b>2 selected'],
+         'reject': ['Add to my tracker']},
+        {'name': 'step 4: running',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'], job=RUNNING),
+         'expect': ['Analysing', 'Finding faces', '3 of 10', '30%', 'about 42s left'],
+         'reject': ['Add to my tracker']},
+        {'name': 'step 4: running, no counts yet',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'],
+                             job=dict(RUNNING, log=[], eta=None,
+                                      progress={'phase': None, 'done': 0,
+                                                'total': 0, 'pct': 0})),
+         'expect': ['Analysing', 'indet']},
+        {'name': 'step 5: result, good capture',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'],
+                             result=dict(RESULT, luma_ok=True, fellback=False),
+                             preflight=PREFLIGHT_GOOD),
+         'expect': ['Good capture', '45.6', 'Add to my tracker', 'Discard this session',
+                    'clean session'],
+         'reject': ['Analyse</button>', 'Reshoot recommended']},
+        {'name': 'step 5: result, reshoot recommended',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'],
+                             result=RESULT, preflight=PREFLIGHT_BAD),
+         'expect': ['Reshoot recommended', 'We would skip this one',
+                    'exposure 133.7', 'Add to my tracker']},
+        {'name': 'step 5: result with flagged conditions',
+         'state': base_state(checklist=CHECKLIST_FAIL, staged=['a.jpg'],
+                             result=dict(RESULT, valid=False,
+                                         excluded_reason='Frontal light'),
+                             preflight=PREFLIGHT_GOOD),
+         'expect': ['stay out of your trend line']},
+        {'name': 'step 5: no result produced',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'],
+                             result={'mean': None, 'n': 0},
+                             job=dict(RUNNING, running=False, rc=0)),
+         'expect': ['did not produce a result', 'Start over']},
+        {'name': 'done: added to tracker',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'], scored=True,
+                             result=dict(RESULT, logged=True, in_series=True)),
+         'expect': ['Added to your tracker', 'View tracker', 'Start a new session'],
+         'reject': ['Add to my tracker']},
+        {'name': 'done: added but flagged',
+         'state': base_state(checklist=CHECKLIST_FAIL, staged=['a.jpg'], scored=True,
+                             result=dict(RESULT, logged=True, valid=False)),
+         'expect': ['kept out of the trend line']},
+        {'name': 'take letter in header', 'state': base_state(date='2026-09-12b'),
+         'expect': ['take b']},
     ]
 
 
@@ -227,7 +239,7 @@ class TestCopy(unittest.TestCase):
     def test_no_methodology_jargon(self):
         js = self.script()
         for term in ('pre-registered', 'protocol failure', 'validity recorded',
-                     'one-way door', 'the study series'):
+                     'one-way door', 'the study series', 'in the series'):
             hits = [l.strip()[:80] for l in js.split('\n') if term in l]
             self.assertEqual(hits, [], '%r in UI copy: %s' % (term, hits))
 

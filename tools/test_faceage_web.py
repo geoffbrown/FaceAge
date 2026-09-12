@@ -14,6 +14,7 @@ import json
 import shutil
 import tempfile
 import unittest
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -228,7 +229,8 @@ class TestBrowsing(WebTestCase):
 
 
 class TestChecklistOrdering(WebTestCase):
-    """§1 — the ordering is the point, so it is enforced server-side."""
+    """Conditions are confirmed BEFORE analysis, and analysis never writes to
+    the tracker. The only path in is do_add, on the result screen."""
 
     def setUp(self):
         WebTestCase.setUp(self)
@@ -237,68 +239,140 @@ class TestChecklistOrdering(WebTestCase):
         self.w.do_import({'person': 'me', 'date': '2026-09-13',
                           'files': ['IMG_1.jpg']})
 
+    def ok(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+
     def test_score_refused_without_checklist(self):
         with self.assertRaises(ValueError) as cm:
             self.w.do_score({'person': 'me', 'date': '2026-09-13'})
-        self.assertIn('checklist', str(cm.exception))
+        self.assertIn('conditions', str(cm.exception))
 
-    def test_oneoff_is_exempt(self):
-        """A one-off enters no series, so there is nothing to protect."""
-        calls = []
-        self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
-        self.w.do_score({'person': 'me', 'date': '2026-09-13', 'oneoff': True})
-        self.assertIn('--no-log', calls[0])
-
-    def test_score_allowed_once_checklist_recorded(self):
-        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
-                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+    def test_score_is_always_a_dry_run(self):
+        self.ok()
         calls = []
         self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
         self.w.do_score({'person': 'me', 'date': '2026-09-13'})
-        self.assertNotIn('--no-log', calls[0])
+        self.assertIn('--no-log', calls[0])
         self.assertIn('--subject', calls[0])
-        self.assertIn('me', calls[0])
+
+    def test_score_refused_once_in_tracker(self):
+        self.ok()
+        self.history('me', '2026-09-13')
+        with self.assertRaises(ValueError):
+            self.w.do_score({'person': 'me', 'date': '2026-09-13'})
 
     def test_checklist_refused_after_scoring(self):
-        """Recording validity after the number is known is not an exclusion."""
         self.history('me', '2026-09-13')
         with self.assertRaises(ValueError) as cm:
-            self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
-                                 'answers': {k: True for k, _ in self.w.CHECKLIST}})
+            self.ok()
         self.assertIn('already been scored', str(cm.exception))
 
     def test_failed_item_records_a_protocol_failure(self):
         a = {k: True for k, _ in self.w.CHECKLIST}
         a['light'] = False
-        r = self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
-                                 'answers': a})
+        r = self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'answers': a})
         self.assertFalse(r['checklist']['valid'])
         vfile = os.path.join(self.w.results_dir('me'), 'session_validity.csv')
         with open(vfile) as fh:
             rows = list(csv.DictReader(fh))
-        self.assertEqual(rows[0]['session_date'], '2026-09-13')
-        self.assertEqual(rows[0]['valid'], 'no')
+        self.assertEqual((rows[0]['session_date'], rows[0]['valid']), ('2026-09-13', 'no'))
         self.assertIn('Frontal light', rows[0]['reason'])
 
-    def test_reason_has_no_comma_to_break_the_csv(self):
-        a = {k: False for k, _ in self.w.CHECKLIST}
-        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'answers': a})
-        vfile = os.path.join(self.w.results_dir('me'), 'session_validity.csv')
-        with open(vfile) as fh:
-            rows = list(csv.DictReader(fh))
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]['valid'], 'no')
-        self.assertTrue(rows[0]['recorded_at'])
-
     def test_all_passed_writes_no_failure_row(self):
-        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
-                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
-        vfile = os.path.join(self.w.results_dir('me'), 'session_validity.csv')
-        self.assertFalse(os.path.exists(vfile))
+        self.ok()
+        self.assertFalse(os.path.exists(
+            os.path.join(self.w.results_dir('me'), 'session_validity.csv')))
 
     def test_score_refused_with_no_photos(self):
         with self.assertRaises(ValueError):
             self.w.do_score({'person': 'me', 'date': '2026-09-20'})
+
+
+class TestAddToTracker(WebTestCase):
+    """do_add writes the history row from the pipeline's summary, with the
+    pipeline's own columns and rounding."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13', 'files': ['IMG_1.jpg']})
+
+    def summary(self, **kw):
+        d = {'n': 9, 'n_total_images': 10, 'n_failed': 1, 'n_flagged': 0,
+             'fellback_to_flagged': False, 'mean': 44.123456, 'median': 44.05,
+             'std': 0.81, 'min': 42.9, 'max': 45.4, 'luma': 121.34,
+             'session_date': '2026-09-13'}
+        d.update(kw)
+        with open(os.path.join(self.w.results_dir('me'), '2026-09-13_summary.json'), 'w') as fh:
+            json.dump(d, fh)
+
+    def ok(self):
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+
+    def rows(self):
+        with open(os.path.join(self.w.results_dir('me'), 'faceage_history.csv')) as fh:
+            return list(csv.DictReader(fh))
+
+    def test_refused_before_analysis(self):
+        self.ok()
+        with self.assertRaises(ValueError):
+            self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+
+    def test_refused_without_checklist(self):
+        self.summary()
+        with self.assertRaises(ValueError):
+            self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+
+    def test_writes_the_row_with_pipeline_columns_and_rounding(self):
+        self.ok(); self.summary()
+        self.assertTrue(self.w.do_add({'person': 'me', 'date': '2026-09-13'})['ok'])
+        r = self.rows()[0]
+        self.assertEqual(list(r.keys()), self.w.HISTORY_COLS)
+        self.assertEqual(r['mean'], '44.1235')          # 4 dp, like the pipeline
+        self.assertEqual(r['mean_luma'], '121.3')       # 1 dp
+        self.assertEqual(r['n'], '9')
+        self.assertIn('+00:00', r['run_timestamp'])     # UTC, like the pipeline
+
+    def test_columns_match_the_pipeline_source(self):
+        """Pinned against src/faceage_run.py so a column added there fails
+        here rather than silently misaligning the row."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'src', 'faceage_run.py')).read()
+        m = re.search(r"def append_history.*?cols = \[(.*?)\]", src, re.S)
+        self.assertEqual(re.findall(r"'([a-z_0-9]+)'", m.group(1)), self.w.HISTORY_COLS)
+
+    def test_refused_twice(self):
+        self.ok(); self.summary()
+        self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+        with self.assertRaises(ValueError):
+            self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_keeps_other_rows_and_sorts(self):
+        self.history('me', '2026-09-20', luma=120.0)
+        self.ok(); self.summary()
+        self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+        self.assertEqual([r['session_date'] for r in self.rows()], ['2026-09-13', '2026-09-20'])
+
+    def test_promotion_is_logged(self):
+        self.ok(); self.summary()
+        self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+        with open(os.path.join(self.w.results_dir('me'), 'promoted.csv')) as fh:
+            self.assertEqual(list(csv.DictReader(fh))[0]['session'], '2026-09-13')
+
+    def test_result_reports_logged_afterwards(self):
+        self.ok(); self.summary()
+        self.assertFalse(self.w.session_result('me', '2026-09-13')['logged'])
+        self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+        self.assertTrue(self.w.session_result('me', '2026-09-13')['logged'])
+
+    def test_no_usable_photos_refused(self):
+        self.ok(); self.summary(n=0, mean=None)
+        with self.assertRaises(ValueError):
+            self.w.do_add({'person': 'me', 'date': '2026-09-13'})
 
 
 class TestPageJavaScript(WebTestCase):
@@ -555,24 +629,6 @@ class TestSessionResult(WebTestCase):
         self.assertFalse(r['valid'])
         self.assertFalse(r['in_series'])
 
-    def test_promotion_is_recorded(self):
-        """Adding after the number is known is allowed, but not silent."""
-        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
-                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
-        self.summary()
-        self.put_inbox('IMG_1.jpg')
-        self.w.do_import({'person': 'me', 'date': '2026-09-13',
-                          'files': ['IMG_1.jpg']})
-        calls = []
-        self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
-        self.w.do_score({'person': 'me', 'date': '2026-09-13', 'promote': True})
-        self.assertNotIn('--no-log', calls[0])
-        log = os.path.join(self.w.results_dir('me'), 'promoted.csv')
-        with open(log) as fh:
-            rows = list(csv.DictReader(fh))
-        self.assertEqual(rows[0]['session'], '2026-09-13')
-        self.assertEqual(rows[0]['mean_at_promotion'], '44.12')
-
     def test_no_pairwise_delta_is_exposed(self):
         """§3: pairwise session deltas are not interpreted. The result must not
         hand the UI a change-since-last-session to render."""
@@ -809,17 +865,6 @@ class TestDiscard(WebTestCase):
             self.w.JOB.running = False
             self.w.JOB.log = []
 
-    def test_ui_flags_are_carried_across_a_state_refresh(self):
-        """load() replaces state wholesale, which silently dropped the discard
-        confirmation and made a discard look like a no-op."""
-        import re
-        js = re.search(r'<script>(.*?)</script>', self.w.PAGE, re.S).group(1)
-        self.assertIn('discardNote', js)
-        carry = re.search(r"var CARRY = \[(.*?)\]", js).group(1)
-        for k in ('browseDir', 'oneoff', 'prefill', 'reopen',
-                  'discardNote', 'movedNote'):
-            self.assertIn(k, carry)
-
     def test_discarding_an_empty_session_is_harmless(self):
         r = self.w.do_discard({'person': 'me', 'date': '2026-09-20', 'reason': ''})
         self.assertTrue(r['ok'])
@@ -852,50 +897,6 @@ class TestPrefill(WebTestCase):
                              'answers': {k: True for k, _ in self.w.CHECKLIST}})
         self.w.previous_checklist('me', '2026-09-13')
         self.assertIsNone(self.w.read_checklist('me', '2026-09-13'))
-
-
-class TestOneOff(WebTestCase):
-    """The choice that decides whether a session enters the series has to sit
-    next to the button that acts on it, and has to be readable from the code."""
-
-    def setUp(self):
-        WebTestCase.setUp(self)
-        self.person()
-        self.put_inbox('IMG_1.jpg')
-        self.w.do_import({'person': 'me', 'date': '2026-09-13',
-                          'files': ['IMG_1.jpg']})
-
-    def script(self):
-        import re
-        return re.search(r'<script>(.*?)</script>', self.w.PAGE, re.S).group(1)
-
-    def test_button_label_says_what_it_does(self):
-        js = self.script()
-        self.assertIn('Score and add to series', js)
-        self.assertIn('Score only', js)
-
-    def test_toggle_lives_in_the_score_card(self):
-        """It used to sit in the Person card at the top, far from its effect."""
-        js = self.script()
-        score_at = js.index('---- score ----')
-        person_at = js.index('---- person ----')
-        oneoff_at = js.index("id=\"oneoff\"")
-        self.assertGreater(oneoff_at, score_at)
-        self.assertGreater(score_at, person_at)
-
-    def test_oneoff_passes_no_log(self):
-        calls = []
-        self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
-        self.w.do_score({'person': 'me', 'date': '2026-09-13', 'oneoff': True})
-        self.assertIn('--no-log', calls[0])
-
-    def test_tracked_run_does_not(self):
-        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
-                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
-        calls = []
-        self.w.JOB.start = lambda label, argv, cwd=None: calls.append(argv)
-        self.w.do_score({'person': 'me', 'date': '2026-09-13'})
-        self.assertNotIn('--no-log', calls[0])
 
 
 class TestProgress(WebTestCase):
@@ -941,6 +942,20 @@ class TestState(WebTestCase):
         s = self.w.state('me', '2026-09-13')
         self.assertFalse(s['preflight']['available'])
         self.assertIn('pipeline writes', s['preflight']['why'])
+
+    def test_fresh_visit_lands_on_today(self):
+        self.person()
+        st = self.w.state('me')
+        self.assertEqual(st['date'], st['today'])
+
+    def test_fresh_visit_skips_a_session_already_in_tracker(self):
+        """A new visit always starts fresh: if today is already in the
+        tracker, open the next take rather than the finished one."""
+        self.person()
+        import datetime as dt
+        today = dt.date.today().isoformat()
+        self.history('me', today)
+        self.assertEqual(self.w.state('me')['date'], today + 'b')
 
     def test_checklist_items_match_preregistration(self):
         s = self.w.state()

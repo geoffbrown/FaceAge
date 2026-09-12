@@ -711,43 +711,113 @@ def do_discard(body):
 
 
 def do_score(body):
+    """Analyse the staged photos. Never writes to the tracker.
+
+    Scoring is a dry run by design: the number and the diagnosis come back,
+    and whether the session goes into the tracker is a separate, explicit
+    decision made on the result screen (do_add). That removes the old
+    one-off checkbox, which forced the choice before the number existed and
+    could not be undone in the useful direction.
+    """
     name = safe_subject(body.get('person'))
     date = safe_date(body.get('date'))
-    oneoff = bool(body.get('oneoff'))
-
     if not staged(name, date):
-        raise ValueError('no photos staged for %s' % date)
+        raise ValueError('no photos in this session yet')
+    if read_checklist(name, date) is None:
+        raise ValueError('confirm the shooting conditions first')
+    if session_scored(name, date):
+        raise ValueError('this session is already in your tracker')
+    argv = [FACEAGE, 'run', date, '--subject', name, '--no-log']
+    JOB.start('Analysing %s — %s' % (name, date), argv)
+    return {'ok': True, 'started': True}
 
-    # §1 ordering, enforced: a tracked session cannot be scored until the
-    # checklist exists. A one-off enters no series, so it is exempt.
-    if not oneoff and read_checklist(name, date) is None:
-        raise ValueError('answer the session checklist before scoring — it has '
-                         'to be decided without knowing the number (§1)')
 
-    promoting = bool(body.get('promote'))
-    if promoting:
-        # Adding an existing one-off result to the series. Logged, because it
-        # is a decision taken with the number already known -- allowed, but not
-        # silent.
-        res = results_dir(name)
-        os.makedirs(res, exist_ok=True)
-        log = os.path.join(res, 'promoted.csv')
-        new = not os.path.exists(log)
-        with open(log, 'a', newline='') as fh:
-            if new:
-                fh.write('session,promoted_at,mean_at_promotion\n')
-            prior = session_result(name, date) or {}
-            fh.write('%s,%s,%s\n' % (
-                date,
-                datetime.datetime.now().replace(microsecond=0).isoformat(),
-                prior.get('mean', '')))
+HISTORY_COLS = ['session_date', 'run_timestamp', 'n', 'n_total_images', 'n_failed',
+                'n_flagged', 'mean', 'median', 'std', 'min', 'max', 'mean_luma',
+                'model_sha256', 'image_dir', 'notes']
 
-    argv = [FACEAGE, 'run', date, '--subject', name]
-    if oneoff:
-        argv.append('--no-log')
-    JOB.start('%s %s — %s' % ('Adding to series' if promoting else 'Scoring',
-                              name, date), argv)
-    return {'ok': True, 'started': True, 'promoting': promoting}
+
+def model_sha_short():
+    """First 16 hex chars of the weights' SHA-256, as the pipeline records it."""
+    path = os.path.join(REPO, 'models', 'faceage_model.h5')
+    if not os.path.exists(path):
+        return ''
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def do_add(body):
+    """Put a scored session into the tracker.
+
+    Writes the history row from the summary the pipeline already produced,
+    with the same columns and rounding as src/faceage_run.py append_history,
+    so a row added here is indistinguishable from one the pipeline wrote --
+    except that promoted.csv records that it was added after the number was
+    known. Allowed, but not silent.
+    """
+    name = safe_subject(body.get('person'))
+    date = safe_date(body.get('date'))
+    res = results_dir(name)
+    summ = os.path.join(res, '%s_summary.json' % date)
+    if not os.path.exists(summ):
+        raise ValueError('nothing to add -- analyse the session first')
+    if read_checklist(name, date) is None:
+        raise ValueError('confirm the shooting conditions first')
+    if session_scored(name, date):
+        raise ValueError('this session is already in your tracker')
+    with open(summ) as fh:
+        d = json.load(fh)
+    if not d.get('n'):
+        raise ValueError('no usable photos were scored, so there is nothing to add')
+
+    def r4(v):
+        return round(v, 4) if isinstance(v, (int, float)) else ''
+
+    row = {
+        'session_date': date,
+        'run_timestamp': datetime.datetime.now(datetime.timezone.utc)
+                                 .replace(microsecond=0).isoformat(),
+        'n': d.get('n'), 'n_total_images': d.get('n_total_images'),
+        'n_failed': d.get('n_failed'), 'n_flagged': d.get('n_flagged'),
+        'mean': r4(d.get('mean')), 'median': r4(d.get('median')),
+        'std': r4(d.get('std')) if d.get('std') == d.get('std') else '',
+        'min': r4(d.get('min')), 'max': r4(d.get('max')),
+        'mean_luma': (round(d['luma'], 1)
+                      if isinstance(d.get('luma'), (int, float)) else ''),
+        'model_sha256': model_sha_short(),
+        'image_dir': session_dir(name, date),
+        'notes': (body.get('notes') or '').strip()[:300].replace(',', ';'),
+    }
+
+    hist = os.path.join(res, 'faceage_history.csv')
+    rows = []
+    if os.path.exists(hist):
+        with open(hist) as fh:
+            rows = [x for x in csv.DictReader(fh)
+                    if (x.get('session_date') or '').strip() != date]
+    rows.append(row)
+    rows.sort(key=lambda x: x.get('session_date') or '')
+    tmp = hist + '.tmp'
+    with open(tmp, 'w', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=HISTORY_COLS, extrasaction='ignore')
+        w.writeheader()
+        for x in rows:
+            w.writerow({c: x.get(c, '') for c in HISTORY_COLS})
+    os.replace(tmp, hist)
+
+    log = os.path.join(res, 'promoted.csv')
+    new = not os.path.exists(log)
+    with open(log, 'a', newline='') as fh:
+        if new:
+            fh.write('session,promoted_at,mean_at_promotion\n')
+        fh.write('%s,%s,%s\n' % (date, row['run_timestamp'], row['mean']))
+
+    build_chart(name)
+    return {'ok': True, 'session': date, 'mean': row['mean']}
 
 
 def do_preflight(person, date):
@@ -849,9 +919,14 @@ def state(person=None, date=None, browse=None):
     people = list_people()
     if person is None and people:
         person = people[0]['name']
-    date = date or datetime.date.today().isoformat()
+    today = datetime.date.today().isoformat()
+    if not date and person:
+        # Land on today's session unless it is already in the tracker, in which
+        # case open the next take so a new visit always starts fresh.
+        date = today if not session_scored(person, today) else next_take(person, today)
+    date = date or today
     listing = list_dir(browse or INBOX)
-    s = {'people': people, 'person': person, 'date': date,
+    s = {'people': people, 'person': person, 'date': date, 'today': today,
          'inbox_path': INBOX, 'browse': listing,
          'inbox': listing['images'], 'data_path': DATA,
          'checklist_items': [{'key': k, 'label': l} for k, l in CHECKLIST],
@@ -869,107 +944,174 @@ def state(person=None, date=None, browse=None):
     return s
 
 
-PAGE = """<!doctype html>
+PAGE = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FaceAge</title>
 <style>
 :root{color-scheme:light dark;
-  --s1:#fcfcfb;--s2:#fff;--bd:#e5e4e0;--tx:#0b0b0b;--t2:#52514e;--t3:#78766f;
-  --ac:#2a78d6;--ok:#0ca30c;--wn:#b8860b;--er:#d03b3b;--wnbg:rgba(250,178,25,.10);
-  --erbg:rgba(208,59,59,.09);--okbg:rgba(12,163,12,.09)}
+  --bg:#f6f5f2;--card:#fff;--line:#e6e4df;--ink:#141414;--ink2:#5a5955;--ink3:#8a8880;
+  --accent:#1f6feb;--accent-ink:#fff;--good:#1a8f3c;--good-bg:#e8f6ec;
+  --warn:#9a6b00;--warn-bg:#fff5da;--bad:#c62828;--bad-bg:#fdecec;
+  --radius:14px;--shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px -12px rgba(0,0,0,.12)}
 @media (prefers-color-scheme:dark){:root:where(:not([data-theme=light])){
-  --s1:#1a1a19;--s2:#222221;--bd:#33322f;--tx:#fff;--t2:#c3c2b7;--t3:#8e8c83;
-  --ac:#3987e5;--ok:#3fbf3f;--wn:#fab219;--er:#e8564f;--wnbg:rgba(250,178,25,.14);
-  --erbg:rgba(232,86,79,.13);--okbg:rgba(63,191,63,.12)}}
+  --bg:#141413;--card:#1e1e1c;--line:#302f2c;--ink:#f3f2ee;--ink2:#b9b7ae;--ink3:#84827a;
+  --accent:#4c8df5;--good:#4fc26a;--good-bg:#173321;--warn:#e6b64a;--warn-bg:#3a2f12;
+  --bad:#f06767;--bad-bg:#3b1c1c;--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6)}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--s1);color:var(--tx);
-  font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
-.wrap{max-width:820px;margin:0 auto;padding:28px 20px 64px}
-h1{font-size:20px;margin:0 0 2px;letter-spacing:-.01em}
-.sub{color:var(--t2);font-size:13px;margin:0 0 22px}
-.card{background:var(--s2);border:1px solid var(--bd);border-radius:10px;
-  padding:14px 16px;margin-bottom:14px}
-.card h2{font-size:13px;margin:0 0 10px;font-weight:600;
-  text-transform:uppercase;letter-spacing:.05em;color:var(--t3)}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-button{font:inherit;padding:7px 14px;border-radius:7px;border:1px solid var(--bd);
-  background:var(--s1);color:var(--tx);cursor:pointer}
-button:hover:not(:disabled){border-color:var(--ac)}
-button.primary{background:var(--ac);border-color:var(--ac);color:#fff;font-weight:600}
-button.danger{border-color:var(--er);color:var(--er)}
-button.danger:hover:not(:disabled){background:var(--erbg);border-color:var(--er)}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,"Segoe UI",Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:640px;margin:0 auto;padding:36px 20px 80px}
+
+/* header */
+.top{display:flex;align-items:center;gap:12px;margin-bottom:28px;flex-wrap:wrap}
+.brand{font-weight:700;font-size:18px;letter-spacing:-.01em;margin-right:auto}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:99px;
+  background:var(--card);border:1px solid var(--line);font-size:13px;color:var(--ink2)}
+.chip b{color:var(--ink)}
+.chip button{all:unset;cursor:pointer;color:var(--accent);font-size:12.5px;margin-left:2px}
+.chip button:hover{text-decoration:underline}
+
+/* step rail */
+.rail{display:flex;gap:6px;margin:0 0 22px;padding:0;list-style:none}
+.rail li{flex:1;display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--ink3);
+  text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.rail li i{display:block;height:4px;border-radius:99px;background:var(--line)}
+.rail li.done i{background:var(--good)}
+.rail li.now{color:var(--ink)}
+.rail li.now i{background:var(--accent)}
+@media (max-width:480px){.rail li span{display:none}}
+
+/* completed steps, compact */
+.donerow{display:flex;align-items:center;gap:10px;padding:12px 16px;margin-bottom:10px;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  font-size:14px;color:var(--ink2)}
+.donerow .tick{color:var(--good);font-weight:700}
+.donerow b{color:var(--ink);font-weight:600}
+.donerow .sp{flex:1}
+.donerow button{all:unset;cursor:pointer;color:var(--accent);font-size:13px}
+.donerow button:hover{text-decoration:underline}
+
+/* the active card */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:24px 24px 22px;box-shadow:var(--shadow);margin-bottom:14px}
+.card h2{font-size:20px;margin:0 0 4px;letter-spacing:-.015em;font-weight:700}
+.card .lead{color:var(--ink2);margin:0 0 18px;font-size:14.5px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:20px}
+.actions .sp{flex:1}
+
+/* controls */
+button{font:inherit;font-weight:600;padding:11px 18px;border-radius:10px;
+  border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;
+  transition:transform .05s ease,background .15s ease}
+button:hover:not(:disabled){background:var(--bg)}
+button:active:not(:disabled){transform:translateY(1px)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button.primary:hover:not(:disabled){filter:brightness(1.06);background:var(--accent)}
+button.quiet{border-color:transparent;background:transparent;color:var(--ink2);font-weight:500}
+button.quiet:hover:not(:disabled){background:var(--bg);color:var(--ink)}
+button.danger{color:var(--bad);border-color:transparent;background:transparent;font-weight:500}
+button.danger:hover:not(:disabled){background:var(--bad-bg)}
 button:disabled{opacity:.45;cursor:not-allowed}
-input,select{font:inherit;padding:6px 9px;border-radius:7px;
-  border:1px solid var(--bd);background:var(--s1);color:var(--tx)}
-.muted{color:var(--t2);font-size:12.5px}
-.dirs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px;max-height:110px;overflow:auto}
-button.dir{padding:4px 10px;font-size:12.5px;border-radius:6px}
-.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;
-  font-weight:600;border:1px solid var(--bd);color:var(--t2)}
-ul.files{list-style:none;margin:8px 0 0;padding:0;max-height:230px;overflow:auto}
-ul.files li{display:flex;gap:8px;align-items:center;padding:4px 2px;
-  border-bottom:1px solid var(--bd);font-size:13px}
-ul.files li:last-child{border-bottom:0}
-.fname{flex:1;font-variant-numeric:tabular-nums}
-.chk{display:flex;gap:9px;align-items:flex-start;padding:7px 0;
-  border-bottom:1px solid var(--bd)}
-.chk:last-of-type{border-bottom:0}
-.chk label{flex:1;font-size:13px}
-.find{border-left:3px solid var(--bd);padding:9px 12px;margin:9px 0;border-radius:0 7px 7px 0}
-.find.RESHOOT{border-color:var(--er);background:var(--erbg)}
-.find.CHECK{border-color:var(--wn);background:var(--wnbg)}
-.find.INFO{border-color:var(--ac)}
-.find .what{font-weight:600;margin-bottom:3px}
-.find .lbl{color:var(--t3);font-size:11px;text-transform:uppercase;
-  letter-spacing:.05em;margin-right:5px}
-.find p{margin:3px 0;font-size:13px;color:var(--t2)}
-.verdict{padding:11px 13px;border-radius:8px;font-weight:600;margin-bottom:4px}
-.verdict.GOOD{background:var(--okbg);color:var(--ok)}
-.verdict.CHECK{background:var(--wnbg);color:var(--wn)}
-.verdict.RESHOOT{background:var(--erbg);color:var(--er)}
-pre.log{background:var(--s1);border:1px solid var(--bd);border-radius:7px;
-  padding:9px;font-size:12px;max-height:220px;overflow:auto;margin:8px 0 0;
-  white-space:pre-wrap}
-.err{color:var(--er);font-size:13px;margin-top:8px}
-.warn{background:var(--wnbg);border-left:3px solid var(--wn);padding:9px 12px;
-  border-radius:0 7px 7px 0;font-size:13px;margin:8px 0}
-.prog{margin:4px 0 10px}
-.progbar{height:8px;background:var(--bd);border-radius:99px;overflow:hidden}
-.progfill{height:100%;background:var(--ac);border-radius:99px;
-  transition:width .3s ease}
-.progfill.indet{animation:sweep 1.1s ease-in-out infinite;transform-origin:left}
-@keyframes sweep{0%{opacity:.35}50%{opacity:1}100%{opacity:.35}}
-.progline{display:flex;align-items:center;gap:6px;margin-top:7px;font-size:13px;
-  color:var(--t2);font-variant-numeric:tabular-nums}
-.result{border:1px solid var(--bd);border-radius:9px;padding:13px 15px;margin-top:10px;
-  background:var(--s1)}
-.rmain{display:flex;align-items:baseline;gap:9px}
-.rnum{font-size:34px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-.runit{font-size:12.5px;color:var(--t2)}
-.rmeta{display:flex;flex-wrap:wrap;gap:14px;margin-top:7px;font-size:12.5px;
-  color:var(--t2);font-variant-numeric:tabular-nums}
-.rmeta .bad{color:var(--er)}
-.oneoff{display:block;margin-top:10px;font-size:12.5px;color:var(--t2)}
-.notlogged{margin-top:10px;padding:11px 13px;border-radius:8px;
-  border:1px dashed var(--bd);background:var(--s2);font-size:13px}
-.inseries{margin-top:9px;color:var(--ok);font-weight:600;font-size:13px}
-.done{margin-top:9px;font-weight:600;font-size:13px}
-.done.good{color:var(--ok)} .done.bad{color:var(--er)}
-details summary{cursor:pointer;font-size:12.5px;margin-top:8px}
-.step{display:flex;align-items:center;gap:7px;margin-bottom:11px;font-size:12px;
-  color:var(--t3);flex-wrap:wrap}
-.step b{color:var(--tx)}
-a{color:var(--ac)}
-.note{font-size:12px;color:var(--t3);margin-top:9px;line-height:1.5}
+input[type=text],select{font:inherit;padding:10px 12px;border-radius:10px;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink);min-width:0}
+select{padding-right:32px}
+.hint{font-size:13px;color:var(--ink3);margin-top:10px;line-height:1.5}
+.err{margin-top:12px;padding:10px 13px;border-radius:10px;background:var(--bad-bg);color:var(--bad);font-size:14px}
+
+/* conditions */
+.cond{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
+.cond:first-of-type{border-top:0}
+.cond input{margin-top:4px;width:18px;height:18px;accent-color:var(--accent)}
+.cond label{flex:1;font-size:14.5px;cursor:pointer}
+.cond small{display:block;color:var(--ink3);font-size:12.5px;margin-top:2px}
+
+/* file picker */
+.pathbar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.pathbar input{flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+.pathbar button{padding:9px 12px}
+.folders{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;max-height:96px;overflow:auto}
+.folders button{padding:6px 11px;font-size:13px;font-weight:500;border-radius:8px}
+.files{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;
+  max-height:260px;overflow:auto}
+.files li{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);font-size:14px}
+.files li:last-child{border-bottom:0}
+.files li:hover{background:var(--bg)}
+.files input{width:17px;height:17px;accent-color:var(--accent)}
+.files .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.files .when{color:var(--ink3);font-size:12.5px}
+.tag{font-size:11px;font-weight:700;letter-spacing:.04em;padding:2px 7px;border-radius:6px;
+  background:var(--bg);border:1px solid var(--line);color:var(--ink2)}
+.staged{margin-top:14px;font-size:13.5px;color:var(--ink2)}
+.staged b{color:var(--ink)}
+
+/* progress */
+.prog{margin:8px 0 6px}
+.bar{height:10px;border-radius:99px;background:var(--line);overflow:hidden}
+.fill{height:100%;background:var(--accent);border-radius:99px;transition:width .35s ease}
+.fill.indet{width:40%!important;animation:slide 1.2s ease-in-out infinite alternate}
+@keyframes slide{from{margin-left:0}to{margin-left:60%}}
+.progmeta{display:flex;gap:8px;align-items:baseline;margin-top:10px;font-size:14px;color:var(--ink2);
+  font-variant-numeric:tabular-nums}
+.progmeta b{color:var(--ink);font-size:15px}
+.progmeta .pct{margin-left:auto;font-weight:700;color:var(--ink);font-size:20px;letter-spacing:-.01em}
+details{margin-top:14px}
+summary{cursor:pointer;color:var(--ink3);font-size:13px}
+pre.log{margin:8px 0 0;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:10px;
+  font-size:12px;white-space:pre-wrap;max-height:220px;overflow:auto}
+
+/* result */
+.verdict{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:99px;
+  font-size:13px;font-weight:700;letter-spacing:.02em;margin-bottom:14px}
+.verdict.GOOD{background:var(--good-bg);color:var(--good)}
+.verdict.CHECK{background:var(--warn-bg);color:var(--warn)}
+.verdict.RESHOOT{background:var(--bad-bg);color:var(--bad)}
+.big{display:flex;align-items:baseline;gap:12px;margin:2px 0 4px}
+.big .n{font-size:56px;font-weight:700;letter-spacing:-.03em;line-height:1;font-variant-numeric:tabular-nums}
+.big .u{color:var(--ink2);font-size:15px}
+.stats{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink2);font-size:13.5px;
+  font-variant-numeric:tabular-nums;margin-bottom:16px}
+.stats b{color:var(--ink);font-weight:600}
+.stats .bad{color:var(--bad)}
+.stats .bad b{color:var(--bad)}
+.reco{padding:14px 16px;border-radius:12px;font-size:15px;margin-bottom:16px;line-height:1.5}
+.reco.GOOD{background:var(--good-bg)}
+.reco.CHECK{background:var(--warn-bg)}
+.reco.RESHOOT{background:var(--bad-bg)}
+.find{border-left:3px solid var(--line);padding:10px 14px;margin:10px 0;border-radius:0 10px 10px 0;background:var(--bg)}
+.find.RESHOOT{border-color:var(--bad)}
+.find.CHECK{border-color:var(--warn)}
+.find.INFO{border-color:var(--accent)}
+.find .w{font-weight:600;margin-bottom:4px;font-size:14.5px}
+.find p{margin:4px 0;font-size:13.5px;color:var(--ink2)}
+.find .k{display:inline-block;width:32px;color:var(--ink3);font-size:11px;font-weight:700;letter-spacing:.06em}
+.find .fl{color:var(--ink3);font-size:12.5px}
+.note{margin-top:14px;padding:11px 14px;border-radius:10px;background:var(--warn-bg);font-size:13.5px}
+.note.ok{background:var(--good-bg)}
+.done-big{text-align:center;padding:12px 0 6px}
+.done-big .tick{width:56px;height:56px;border-radius:50%;background:var(--good-bg);color:var(--good);
+  display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;margin-bottom:12px}
+.done-big h2{margin-bottom:6px}
+.foot{margin-top:28px;font-size:12px;color:var(--ink3);text-align:center}
+.foot code{font-size:11.5px}
 </style></head><body><div class="wrap">
-<h1>FaceAge</h1>
-<p class="sub">Local only. Photographs never leave this machine.</p>
+<div class="top">
+  <div class="brand">FaceAge</div>
+  <div id="who"></div>
+  <div id="sess"></div>
+</div>
+<ul class="rail" id="rail"></ul>
 <div id="app"></div>
-<p class="note" id="foot"></p>
+<p class="foot" id="foot"></p>
 </div>
 <script>
-var S = null, sel = {}, ans = {};
+'use strict';
+var S = null, sel = {}, ui = {browseDir:null, prefill:null, note:null, logOpen:false};
+
+var STEPS = ['Who','Conditions','Photos','Analyse','Result'];
 
 function h(x){return String(x==null?'':x).replace(/[&<>"']/g,
   function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -986,366 +1128,19 @@ function api(path, body){
 function load(){
   var qs = '?person='+encodeURIComponent(S&&S.person||'')+
            '&date='+encodeURIComponent(S&&S.date||'')+
-           '&browse='+encodeURIComponent(S&&S.browseDir||'');
-  /* State is replaced wholesale on every refresh, which silently dropped every
-     client-side flag -- including the confirmation shown after a discard, so a
-     discard looked like it had done nothing. These are UI state, not server
-     state, and are carried across explicitly. */
-  var CARRY = ['browseDir','oneoff','prefill','reopen','discardNote','movedNote'];
-  var prev = S;
-  return api('/api/state'+qs).then(function(j){
-      S = j;
-      if(prev) CARRY.forEach(function(k){
-        if(prev[k] !== undefined && prev[k] !== null) S[k] = prev[k]; });
-      render();})
+           '&browse='+encodeURIComponent(ui.browseDir||'');
+  return api('/api/state'+qs).then(function(j){ S = j; render(); })
     .catch(function(e){
-      /* Never leave the page blank. A silent failure here is indistinguishable
-         from a broken build. */
       document.getElementById('app').innerHTML =
-        '<div class="card"><h2>Could not load</h2><p class="err">'+h(e.message)+
-        '</p><p class="muted">Check the terminal running <code>faceage app</code>.</p></div>';
+        '<div class="card"><h2>Could not load</h2><div class="err">'+h(e.message)+
+        '</div><p class="hint">Check the terminal running <code>faceage app</code>.</p></div>';
     });
 }
 
-function err(m){
-  var e = document.createElement('p');
-  e.className='err'; e.textContent=m;
-  document.getElementById('app').appendChild(e);
-}
-
-function render(){
-  var a = document.getElementById('app'), o = [];
-  document.getElementById('foot').textContent =
-    'data: '+S.data_path+'   ·   inbox: '+S.inbox_path;
-
-  // ---- person ----
-  o.push('<div class="card"><h2>Person</h2><div class="row">');
-  o.push('<select id="who">');
-  S.people.forEach(function(p){
-    o.push('<option value="'+h(p.name)+'"'+(p.name===S.person?' selected':'')+'>'+
-           h(p.name)+' — '+p.logged+' session'+(p.logged===1?'':'s')+'</option>');});
-  if(!S.people.length) o.push('<option value="">no one yet</option>');
-  o.push('</select>');
-  o.push('<input id="newname" placeholder="new person" size="12">');
-  o.push('<button onclick="addPerson()">Add</button>');
-  o.push('</div>');
-  o.push('<div class="note">Everyone gets their own tracker and chart. There is no '+
-         'side-by-side view on purpose — two people shot in different rooms with '+
-         'different phones cannot be compared meaningfully. Someone else\u2019s photos '+
-         'are theirs: ask first, and delete their folder when you are done.</div>');
-  o.push('</div>');
-
-  if(!S.person){ a.innerHTML = o.join(''); wire(); return; }
-
-  var take = (S.date||'').length > 10 ? S.date.slice(10) : '';
-  o.push('<div class="step"><b>'+h(S.person)+'</b> · session <input id="date" type="date" value="'+
-         h((S.date||'').slice(0,10))+'" style="padding:3px 6px">'+
-         (take?' <span class="pill">take '+h(take)+'</span>':'')+' · '+
-         S.staged.length+' photo'+(S.staged.length===1?'':'s')+' staged'+
-         (S.scored?' · <span class="pill">scored</span>':'')+
-         (S.scored?' <button onclick="reshoot()" style="padding:3px 9px;font-size:12px">Reshoot</button>':'')+
-         ((S.staged.length||S.scored||S.checklist)
-            ? ' <button onclick="discard()" class="danger" style="padding:3px 9px;font-size:12px">Start fresh</button>'
-            : '')+
-         '</div>');
-
-  // ---- import ----
-  var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
-  o.push('<div class="card"><h2>1 \u00b7 Import photos</h2>');
-  if(S.discardNote)
-    o.push('<div class="warn">Cleared <b>'+h(S.discardNote)+'</b>. Nothing was '+
-           'deleted \u2014 it all moved to <code>discarded/</code>. This session is '+
-           'empty and ready to go again.</div>');
-  if(S.movedNote)
-    o.push('<div class="warn">That session was already scored, so these photos '+
-           'started a new take: <b>'+h(S.movedNote)+'</b> \u2014 fresh checklist, '+
-           'no result yet.</div>');
-  o.push('<div class="row" style="margin-bottom:8px">');
-  o.push('<button onclick="goUp()"'+(B.parent?'':' disabled')+' title="parent folder">\u2191</button>');
-  o.push('<input id="path" value="'+h(B.path)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:12.5px">');
-  o.push('<button onclick="goPath()">Go</button>');
-  o.push('<button onclick="goHome()">Downloads</button>');
-  o.push('</div>');
-
-  if(B.dirs.length){
-    o.push('<div class="dirs">');
-    B.dirs.forEach(function(d){
-      o.push('<button class="dir" data-dir="'+h(d)+'">📁 '+h(d)+'</button>');});
-    o.push('</div>');
-  }
-
-  if(!B.images.length){
-    o.push('<p class="muted">No images in this folder. Open a subfolder above, or type a path and press Go.</p>');
-  } else {
-    o.push('<ul class="files">');
-    B.images.forEach(function(f){
-      o.push('<li><input type="checkbox" class="ib" value="'+h(f.file)+'"'+
-             (sel[f.file]?' checked':'')+'>'+
-             '<span class="fname">'+h(f.file)+'</span>'+
-             (f.heic?'<span class="pill">HEIC</span>':'')+
-             '<span class="muted">'+h(f.when)+'</span></li>');});
-    o.push('</ul>');
-    o.push('<div class="row" style="margin-top:9px">');
-    o.push('<button onclick="pickAll()">Select all ('+B.images.length+')</button>');
-    o.push('<button onclick="pickRecent()">Select 10 most recent</button>');
-    o.push('<button onclick="pickNone()">Clear</button>');
-    o.push('<span style="flex:1"></span>');
-    o.push('<button class="primary" onclick="doImport()">Import selected</button>');
-    o.push('</div>');
-    if(B.images.some(function(f){return f.heic;}))
-      o.push('<div class="note">HEIC photos are converted to JPEG when you score, '+
-             'and the originals are kept. Simpler still: set the phone to Settings '+
-             '\u203a Camera \u203a Formats \u203a Most Compatible so it writes JPEG '+
-             'directly.</div>');
-  }
-  if(S.staged.length)
-    o.push('<div class="note">Staged: '+S.staged.map(h).join(', ')+'</div>');
-  o.push('</div>');
-
-  // ---- checklist ----
-  var cl = S.checklist, prefill = S.prefill;
-  o.push('<div class="card"><h2>2 · Session checklist</h2>');
-  if(cl){
-    o.push('<p class="muted">Recorded '+h(cl.recorded_at)+' — '+
-           (cl.valid?'<b style="color:var(--ok)">all good</b>':
-                     '<b style="color:var(--er)">problem noted</b>')+'</p>');
-    if(!cl.valid) o.push('<p class="muted">Failed: '+cl.failed.map(h).join('; ')+'</p>');
-    if(S.checklist_stale)
-      o.push('<div class="warn">You imported photos after answering this, so it '+
-             'may not describe the ones in the session now.'+
-             (S.scored?' This session is already scored, so the answers are locked. '+
-                       'Use Reshoot for another take, or Start fresh to clear it.'
-                     :' If you reshot, re-answer it below.')+'</div>');
-    if(!S.scored){
-      o.push('<div class="row" style="margin-top:8px">'+
-             '<button onclick="reopen()">Re-answer checklist</button>'+
-             '<span class="muted">only until the session is scored</span></div>');
-      if(S.reopen){
-        S.checklist_items.forEach(function(it){
-          var pre = prefill && prefill[it.key];
-          o.push('<div class="chk"><input type="checkbox" class="cl" id="cl_'+h(it.key)+
-                 '" value="'+h(it.key)+'"'+(pre?' checked':'')+
-                 '><label for="cl_'+h(it.key)+'">'+h(it.label)+
-                 '</label></div>');});
-        o.push('<div class="row" style="margin-top:9px">');
-        o.push('<input id="clnotes" placeholder="notes (optional)" style="flex:1">');
-        o.push('<button class="primary" onclick="saveChecklist()">Record</button></div>');
-      }
-    }
-  } else if(S.scored){
-    o.push('<p class="muted">This session was already scored without a checklist. '+
-           'Recording one now would be deciding after seeing the number.</p>');
-  } else {
-    o.push('<p class="muted">Tick what was true for this shoot, before you score '+
-           'it. Anything you leave unticked marks the session as a bad capture: '+
-           'it still gets scored, but stays out of the trend.</p>');
-    S.checklist_items.forEach(function(it){
-      var pre = prefill && prefill[it.key];
-      o.push('<div class="chk"><input type="checkbox" class="cl" id="cl_'+h(it.key)+
-             '" value="'+h(it.key)+'"'+(pre?' checked':'')+
-             '><label for="cl_'+h(it.key)+'">'+h(it.label)+'</label></div>');});
-    o.push('<div class="row" style="margin-top:9px">');
-    if(S.prev_checklist)
-      o.push('<button onclick="sameAsLast()">Same as '+h(S.prev_checklist.session_date)+'</button>');
-    o.push('<input id="clnotes" placeholder="notes (optional)" style="flex:1">');
-    o.push('<button class="primary" onclick="saveChecklist()">Record</button></div>');
-    o.push('<div class="note">Copies your last answers so you can check them '+
-           'instead of retyping. You still have to press Record.</div>');
-  }
-  o.push('</div>');
-
-  // ---- score ----
-  o.push('<div class="card"><h2>3 \u00b7 Score</h2>');
-  /* The button must be disabled for every reason the server would refuse, or
-     it offers an action that returns 400. A one-off needs no checklist. */
-  var j = S.job, pr = (j && j.progress) || {};
-  var noPhotos = !S.staged.length;
-  var needsChecklist = !cl && !S.oneoff;
-  var blocked = noPhotos || needsChecklist;
-  if(j.running){
-    var pct = pr.total ? pr.pct : null;
-    o.push('<div class="prog">');
-    o.push('<div class="progbar"><div class="progfill'+(pct===null?' indet':'')+
-           '" style="width:'+(pct===null?100:pct)+'%"></div></div>');
-    o.push('<div class="progline"><b>'+h(pr.phase||'Working')+'</b>'+
-           (pr.total?(' &middot; '+pr.done+' of '+pr.total):'')+
-           '<span style="flex:1"></span>'+
-           (j.eta!=null?('~'+fmtSecs(j.eta)+' left &middot; '):'')+
-           fmtSecs(Math.round(j.elapsed))+' elapsed</div>');
-    o.push('</div>');
-    o.push(details(j.log));
-  } else {
-    o.push('<div class="row"><button class="primary" id="scorebtn"'+
-           (blocked?' disabled':'')+' onclick="score()">'+
-           (S.oneoff?'Score only':'Score and add to series')+'</button>');
-    if(noPhotos) o.push('<span class="muted">Import photos first.</span>');
-    else if(needsChecklist)
-      o.push('<span class="muted">Record the checklist above first \u2014 or tick '+
-             'the box below to score without adding to the series.</span>');
-    o.push('</div>');
-    o.push('<label class="oneoff"><input type="checkbox" id="oneoff"'+
-           (S.oneoff?' checked':'')+'> Just tell me the number \u2014 do not add '+
-           'this to the series</label>');
-    o.push('<div class="note">'+(S.oneoff
-        ? 'Scores the photos and shows you the number. Nothing is saved \u2014 '+
-          'but you can still add it afterwards if you want to keep it.'
-        : 'Adds this session to your tracker and puts it on the chart.'+
-          ((cl && !cl.valid)
-            ? ' You marked a problem on the checklist, so it will show on the '+
-              'chart but stay out of the trend line.'
-            : ''))+'</div>');
-    var R = S.result;
-    if(R && R.mean != null){
-      o.push('<div class="result">');
-      o.push('<div class="rmain"><span class="rnum">'+R.mean.toFixed(2)+'</span>'+
-             '<span class="runit">FaceAge, session mean</span></div>');
-      o.push('<div class="rmeta">');
-      o.push('<span><b>'+R.n+'</b> of '+R.n_total+' photos used</span>');
-      if(R.std!=null) o.push('<span>SD <b>'+R.std.toFixed(2)+'</b></span>');
-      if(R.min!=null&&R.max!=null)
-        o.push('<span>range '+R.min.toFixed(1)+'\u2013'+R.max.toFixed(1)+'</span>');
-      if(R.luma!=null){
-        var lt = 'exposure <b>'+R.luma.toFixed(1)+'</b>';
-        if(R.luma_delta!=null)
-          lt += ' ('+(R.luma_delta>0?'+':'')+R.luma_delta+' vs baseline)';
-        o.push('<span class="'+(R.luma_ok===false?'bad':'')+'">'+lt+'</span>');
-      }
-      o.push('</div>');
-      if(!R.logged){
-        o.push('<div class="notlogged">');
-        o.push('<div><b>Not saved.</b> This was a one-off, so nothing went to '+
-               'your tracker.</div>');
-        if(R.has_checklist)
-          o.push('<button class="primary" style="margin-top:9px" onclick="promote()">'+
-                 'Add this session to the series</button>');
-        else
-          o.push('<div class="muted" style="margin-top:7px">Answer the checklist '+
-                 'above first, then you can add it.</div>');
-        o.push('</div>');
-      } else if(!R.valid)
-        o.push('<div class="warn" style="margin:9px 0 0">You marked a problem with '+
-               'this capture, so it is on the chart but <b>left out of the trend'+
-               '</b>'+(R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
-      else
-        o.push('<div class="inseries">\u2713 Saved to your tracker</div>');
-      if(R.fellback)
-        o.push('<div class="warn" style="margin:9px 0 0">Every photo had something '+
-               'off with it, so the average had to use all of them rather than '+
-               'only the clean ones. Worth a reshoot.</div>');
-      o.push('<div class="note">One session on its own does not mean much. What '+
-             'counts is the trend across many of them, so try not to read too '+
-             'much into a single number.</div>');
-      o.push('</div>');
-    }
-    if(j.log.length){
-      var ok = (j.rc===0);
-      o.push('<div class="done '+(ok?'good':'bad')+'">'+
-             (ok?'\u2713 Finished':'\u2717 Failed (exit '+j.rc+')')+'</div>');
-      o.push(details(j.log));
-    }
-  }
-  o.push('</div>');
-
-  // ---- preflight ----
-  var pfd = S.preflight || {};
-  o.push('<div class="card"><h2>4 · Pre-flight — is this capture usable?</h2>');
-  if(!pfd.available){
-    o.push(pfd.stale ? '<div class="warn">'+h(pfd.why||'')+'</div>'
-                     : '<p class="muted">'+h(pfd.why||'')+'</p>');
-  } else {
-    o.push('<div class="verdict '+h(pfd.verdict)+'">'+h(pfd.verdict)+' — '+
-           h(pfd.verdict_text)+'</div>');
-    if(!pfd.findings.length) o.push('<p class="muted">No findings.</p>');
-    pfd.findings.forEach(function(f){
-      o.push('<div class="find '+h(f.severity)+'">');
-      o.push('<div class="what">'+h(f.what)+'</div>');
-      o.push('<p><span class="lbl">why</span>'+h(f.why)+'</p>');
-      o.push('<p><span class="lbl">do</span>'+h(f.do)+'</p>');
-      if(f.frames && f.frames.length)
-        o.push('<p class="muted">'+h(f.frames.slice(0,6).join(', '))+
-               (f.frames.length>6?', +'+(f.frames.length-6)+' more':'')+'</p>');
-      o.push('</div>');});
-    o.push('<div class="note">Your photos are never edited. If a check fails, '+
-           'change the lighting or the setup and shoot again — brightening the '+
-           'file afterwards would hide the problem rather than fix it.</div>');
-  }
-  o.push('</div>');
-
-  // ---- chart ----
-  o.push('<div class="card"><h2>5 · Series</h2><div class="row">'+
-         '<a href="/tracker?person='+encodeURIComponent(S.person)+
-         '" target="_blank"><button>Open chart</button></a>'+
-         '<span class="muted">trend, CI, exposure trace</span></div></div>');
-
-  a.innerHTML = o.join('');
-  wire();
-}
-
-function wire(){
-  var w = document.getElementById('who');
-  if(w) w.onchange = function(){
-    S.person = w.value; sel = {}; clearNotes(); load(); };
-  var d = document.getElementById('date');
-  if(d) d.onchange = function(){
-    S.date = d.value; S.prefill = null; S.reopen = false; sel = {};
-    clearNotes(); load(); };
-  document.querySelectorAll('.ib').forEach(function(c){
-    c.onchange = function(){ sel[c.value] = c.checked; };});
-  var oo = document.getElementById('oneoff');
-  if(oo) oo.onchange = function(){ S.oneoff = oo.checked; render(); };
-  var det = document.getElementById('logdet');
-  if(det) det.addEventListener('toggle', function(){ logOpen = det.open; });
-  document.querySelectorAll('button.dir').forEach(function(b){
-    b.onclick = function(){
-      var base = S.browse.path;
-      browseTo(base + (base.charAt(base.length-1)==='/'?'':'/') + b.getAttribute('data-dir'));
-    };});
-}
-
-function imgs(){ return (S.browse && S.browse.images) || []; }
-function pickRecent(){ sel={}; imgs().slice(0,10).forEach(function(f){sel[f.file]=true;}); render(); }
-function pickAll(){ sel={}; imgs().forEach(function(f){sel[f.file]=true;}); render(); }
-function pickNone(){ sel={}; render(); }
-function reopen(){ S.reopen = true; render(); }
-function sameAsLast(){
-  S.prefill = (S.prev_checklist && S.prev_checklist.answers) || null;
-  render();
-}
-function discard(){
-  var scored = S.scored, hasB = S.has_b;
-  var msg = 'Throw away session '+S.date+' completely?\\n\\n'+
-            'The photos, checklist, score and results all move to discarded/ '+
-            'and this session starts over empty.';
-  if(scored && hasB)
-    msg += '\\n\\nThis one is already scored and counts towards your study, so '+
-           'this removes a real data point. It is logged with your reason.';
-  else if(scored)
-    msg += '\\n\\nIt is scored, but you have not set a baseline yet, so the '+
-           'study has not started counting.';
-  if(!confirm(msg)) return;
-  var reason = prompt('Why? (recorded in discarded.csv)', '') || '';
-  api('/api/discard', {person:S.person, date:S.date, reason:reason})
-    .then(function(j){
-      S.prefill=null; S.reopen=false; S.movedNote=null; sel={};
-      S.discardNote = j.session + ' \u2014 ' + j.removed.join(', ');
-      load();
-    }).catch(function(e){ err(e.message); });
-}
-
-/* One-shot confirmations. They belong to the action that produced them, not to
-   whatever session you look at next. */
-function clearNotes(){ S.discardNote = null; S.movedNote = null; }
-
-function promote(){
-  api('/api/score', {person:S.person, date:S.date, oneoff:false, promote:true})
-    .then(function(){ poll(); }).catch(function(e){ err(e.message); });
-}
-
-function reshoot(){
-  api('/api/reshoot', {person:S.person, date:S.date}).then(function(j){
-    S.date = j.session; S.prefill = null; S.reopen = false; sel = {};
-    clearNotes(); load();
-  }).catch(function(e){ err(e.message); });
+function fail(e){
+  var a = document.getElementById('app');
+  var d = document.createElement('div'); d.className='err'; d.textContent = e.message;
+  a.appendChild(d);
 }
 
 function fmtSecs(n){
@@ -1355,67 +1150,319 @@ function fmtSecs(n){
   return m+'m'+(r?' '+r+'s':'');
 }
 
-/* render() rebuilds the DOM on every poll, which would slam <details> shut the
-   instant it was clicked. The open state lives outside the markup and is
-   reapplied, and the toggle writes back to it. */
-var logOpen = false;
-function details(lines){
-  return '<details id="logdet"'+(logOpen?' open':'')+
-         '><summary class="muted">Details</summary>'+
-         '<pre class="log">'+h(lines.join('\\n'))+'</pre></details>';
+function niceDate(label){
+  var d = (label||'').slice(0,10), take = (label||'').slice(10);
+  var dt = new Date(d+'T12:00:00');
+  var s = isNaN(dt) ? d : dt.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});
+  return s + (take ? ' · take '+take : '');
 }
 
-function browseTo(p){ S.browseDir=p; sel={}; load(); }
+/* ---- which step are we on? derived from disk state, nothing remembered ---- */
+function stepOf(){
+  if(!S.person) return 0;
+  if(S.result || (S.job && S.job.running)) return 4;
+  if(!S.checklist) return 1;
+  if(!S.staged.length || ui.forcePhotos) return 2;
+  return 3;
+}
+
+/* ---- render ---------------------------------------------------------------- */
+function render(){
+  var step = stepOf();
+  document.getElementById('foot').innerHTML =
+    'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>';
+
+  // header chips
+  document.getElementById('who').innerHTML = S.person
+    ? '<span class="chip"><b>'+h(S.person)+'</b><button onclick="changePerson()">change</button></span>' : '';
+  document.getElementById('sess').innerHTML = S.person
+    ? '<span class="chip">'+h(niceDate(S.date))+
+      ((S.staged.length||S.checklist||S.result)?'<button onclick="discard()">start over</button>':'')+
+      '</span>' : '';
+
+  // rail
+  document.getElementById('rail').innerHTML = STEPS.map(function(n,i){
+    return '<li class="'+(i<step?'done':(i===step?'now':''))+'"><i></i><span>'+n+'</span></li>';
+  }).join('');
+
+  var o = [];
+  if(step > 1 && S.checklist)
+    o.push(doneRow('Conditions', S.checklist.valid ? 'all good' : 'problem noted',
+                   step < 4 ? 'redoConditions()' : null));
+  if(step > 2 && S.staged.length)
+    o.push(doneRow('Photos', S.staged.length+' selected', step < 4 ? 'morePhotos()' : null));
+
+  if(step===0) o.push(cardWho());
+  else if(step===1) o.push(cardConditions());
+  else if(step===2) o.push(cardPhotos());
+  else if(step===3) o.push(cardAnalyse());
+  else o.push(cardResult());
+
+  document.getElementById('app').innerHTML = o.join('');
+  wire();
+}
+
+function doneRow(label, value, change){
+  return '<div class="donerow"><span class="tick">✓</span><span>'+h(label)+': <b>'+h(value)+'</b></span>'+
+         '<span class="sp"></span>'+(change?'<button onclick="'+change+'">change</button>':'')+'</div>';
+}
+
+/* ---- 1 · who --------------------------------------------------------------- */
+function cardWho(){
+  var o = ['<div class="card"><h2>Who are we measuring?</h2>',
+           '<p class="lead">Each person gets their own tracker. Nothing is compared between people.</p>'];
+  if(S.people.length){
+    o.push('<div class="row"><select id="pick">');
+    S.people.forEach(function(p){
+      o.push('<option value="'+h(p.name)+'">'+h(p.name)+' · '+p.logged+' in tracker</option>');});
+    o.push('</select><button class="primary" onclick="pickPerson()">Continue</button></div>');
+    o.push('<p class="hint">Or add someone new:</p>');
+  }
+  o.push('<div class="row"><input type="text" id="newname" placeholder="name" size="14">'+
+         '<button onclick="addPerson()">Add</button></div>');
+  o.push('<p class="hint">Photos of someone else are theirs. Ask first, and delete their folder when you are done.</p>');
+  o.push('</div>');
+  return o.join('');
+}
+
+/* ---- 2 · conditions -------------------------------------------------------- */
+var TIPS = {
+  grooming:'Same as your very first session, whatever that was.',
+  light:'Same lamp, same spot, blinds closed. Not the ceiling light.',
+  camera:'Same phone, main lens, same distance and height. Not the wide lens.',
+  pose:'Look straight ahead, relaxed face, mouth closed.',
+  photoday:'No alcohol for two days, decent sleep, not straight after a shower or a workout.',
+  skin:'No sunburn, breakout, or allergy flare on the forehead or cheeks.'
+};
+function cardConditions(){
+  var pre = ui.prefill || {};
+  var o = ['<div class="card"><h2>Same setup as last time?</h2>',
+           '<p class="lead">Tick each one that is true right now. Lighting changes alone can move the result by years, so this matters more than it looks.</p>'];
+  S.checklist_items.forEach(function(it){
+    o.push('<div class="cond"><input type="checkbox" class="cl" id="c_'+h(it.key)+'" value="'+h(it.key)+'"'+
+           (pre[it.key]?' checked':'')+'><label for="c_'+h(it.key)+'">'+h(it.label)+
+           (TIPS[it.key]?'<small>'+h(TIPS[it.key])+'</small>':'')+'</label></div>');});
+  o.push('<div class="actions">');
+  if(S.prev_checklist)
+    o.push('<button class="quiet" onclick="sameAsLast()">Same as '+h(niceDate(S.prev_checklist.session_date))+'</button>');
+  o.push('<span class="sp"></span>');
+  o.push('<button class="primary" onclick="saveConditions()">Continue</button></div>');
+  o.push('<p class="hint">Leave anything unticked and this session will still be scored, but it will be kept out of your trend line.</p>');
+  o.push('</div>');
+  return o.join('');
+}
+
+/* ---- 3 · photos ------------------------------------------------------------ */
+function cardPhotos(){
+  var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
+  var o = ['<div class="card"><h2>Pick the photos</h2>',
+           '<p class="lead">Ten or so from this session, all from the same spot. AirDrop lands them in Downloads.</p>'];
+  o.push('<div class="pathbar"><button onclick="goUp()"'+(B.parent?'':' disabled')+' title="up">↑</button>'+
+         '<input type="text" id="path" value="'+h(B.path)+'"><button onclick="goPath()">Go</button>'+
+         '<button onclick="goHome()">Downloads</button></div>');
+  if(B.dirs.length){
+    o.push('<div class="folders">');
+    B.dirs.forEach(function(d){ o.push('<button class="dir" data-dir="'+h(d)+'">📁 '+h(d)+'</button>'); });
+    o.push('</div>');
+  }
+  if(!B.images.length){
+    o.push('<p class="hint">No photos here. Open a folder above, or paste a path and press Go.</p>');
+  } else {
+    o.push('<ul class="files">');
+    B.images.forEach(function(f){
+      o.push('<li><input type="checkbox" class="ib" value="'+h(f.file)+'"'+(sel[f.file]?' checked':'')+'>'+
+             '<span class="nm">'+h(f.file)+'</span>'+(f.heic?'<span class="tag">HEIC</span>':'')+
+             '<span class="when">'+h(f.when)+'</span></li>');});
+    o.push('</ul>');
+    o.push('<div class="actions"><button class="quiet" onclick="pickRecent()">Newest 10</button>'+
+           '<button class="quiet" onclick="pickAll()">All '+B.images.length+'</button>'+
+           '<button class="quiet" onclick="pickNone()">None</button><span class="sp"></span>'+
+           '<button class="primary" onclick="doImport()">Use '+countSel()+' selected</button></div>');
+    if(B.images.some(function(f){return f.heic;}))
+      o.push('<p class="hint">HEIC photos are converted to JPEG for analysis; the originals are kept.</p>');
+  }
+  if(S.staged.length) o.push('<div class="staged">Already in this session: <b>'+S.staged.length+'</b> photo'+(S.staged.length===1?'':'s')+'. '+
+                              '<button class="quiet" style="padding:4px 8px" onclick="goAnalyse()">Continue without adding more</button></div>');
+  o.push('</div>');
+  return o.join('');
+}
+function countSel(){ return Object.keys(sel).filter(function(k){return sel[k];}).length; }
+
+/* ---- 4 · analyse ----------------------------------------------------------- */
+function cardAnalyse(){
+  var o = ['<div class="card"><h2>Ready to analyse</h2>',
+           '<p class="lead"><b>'+S.staged.length+'</b> photo'+(S.staged.length===1?'':'s')+' in this session. This takes about half a minute. Nothing is saved to your tracker until you say so.</p>'];
+  o.push('<div class="actions"><button class="quiet" onclick="morePhotos()">Add more photos</button><span class="sp"></span>'+
+         '<button class="primary" onclick="analyse()">Analyse</button></div></div>');
+  return o.join('');
+}
+
+function cardProgress(){
+  var j = S.job, pr = (j && j.progress) || {};
+  var pct = pr.total ? pr.pct : null;
+  var o = ['<div class="card"><h2>Analysing…</h2>',
+           '<p class="lead">Finding the face in each photo, then estimating age.</p>',
+           '<div class="prog"><div class="bar"><div class="fill'+(pct===null?' indet':'')+
+           '" style="width:'+(pct===null?40:pct)+'%"></div></div>',
+           '<div class="progmeta"><b>'+h(pr.phase||'Starting')+'</b>'+
+           (pr.total?('<span>'+pr.done+' of '+pr.total+'</span>'):'')+
+           (j.eta!=null?('<span>· about '+fmtSecs(j.eta)+' left</span>'):'')+
+           '<span class="pct">'+(pct===null?'':Math.round(pct)+'%')+'</span></div></div>',
+           '<details id="logdet"'+(ui.logOpen?' open':'')+'><summary>Details</summary>'+
+           '<pre class="log">'+h(j.log.join('\n'))+'</pre></details></div>'];
+  return o.join('');
+}
+
+/* ---- 5 · result ------------------------------------------------------------ */
+var VERDICT_LABEL = {GOOD:'Good capture', CHECK:'Usable, with notes', RESHOOT:'Reshoot recommended'};
+var VERDICT_ICON  = {GOOD:'✓', CHECK:'!', RESHOOT:'✕'};
+var RECO = {
+  GOOD:   'This looks like a clean session. Add it to your tracker.',
+  CHECK:  'Usable. Read the notes below, then decide.',
+  RESHOOT:'We would skip this one. Fix the items below and shoot again — adding it would put a number you cannot trust into your trend.'
+};
+
+function cardResult(){
+  if(S.job && S.job.running) return cardProgress();
+  var R = S.result;
+  if(!R || R.mean == null){
+    return '<div class="card"><h2>Analysis did not produce a result</h2>'+
+           '<p class="lead">Usually no face was found in any photo. Check the details, then start over.</p>'+
+           (S.job && S.job.log.length ? '<details open><summary>Details</summary><pre class="log">'+h(S.job.log.join('\n'))+'</pre></details>':'')+
+           '<div class="actions"><span class="sp"></span><button class="danger" onclick="discard()">Start over</button></div></div>';
+  }
+  if(R.logged) return cardDone(R);
+
+  var P = S.preflight || {}, v = P.available ? P.verdict : 'CHECK';
+  var o = ['<div class="card">'];
+  o.push('<span class="verdict '+h(v)+'">'+VERDICT_ICON[v]+' '+h(VERDICT_LABEL[v])+'</span>');
+  o.push('<div class="big"><span class="n">'+R.mean.toFixed(1)+'</span><span class="u">FaceAge · average of '+R.n+' photos</span></div>');
+  var st = [];
+  if(R.std!=null) st.push('<span>spread <b>±'+R.std.toFixed(1)+'</b></span>');
+  if(R.n_total && R.n < R.n_total) st.push('<span><b>'+(R.n_total-R.n)+'</b> photo'+((R.n_total-R.n)===1?'':'s')+' unusable</span>');
+  if(R.luma!=null){
+    var l = 'brightness <b>'+R.luma.toFixed(0)+'</b>';
+    if(R.luma_delta!=null) l += ' ('+(R.luma_delta>0?'+':'')+R.luma_delta.toFixed(0)+' vs your baseline)';
+    st.push('<span class="'+(R.luma_ok===false?'bad':'')+'">'+l+'</span>');
+  }
+  o.push('<div class="stats">'+st.join('')+'</div>');
+  o.push('<div class="reco '+h(v)+'">'+h(RECO[v])+'</div>');
+
+  if(P.available && P.findings.length){
+    P.findings.forEach(function(f){
+      o.push('<div class="find '+h(f.severity)+'"><div class="w">'+h(f.what)+'</div>'+
+             '<p><span class="k">WHY</span>'+h(f.why)+'</p><p><span class="k">DO</span>'+h(f.do)+'</p>'+
+             (f.frames&&f.frames.length?'<p class="fl">'+h(f.frames.slice(0,5).join(', '))+(f.frames.length>5?' +'+(f.frames.length-5)+' more':'')+'</p>':'')+
+             '</div>');});
+  }
+  if(!R.valid)
+    o.push('<div class="note">You noted a problem with the conditions, so if you add this it will show on the chart but stay out of your trend line'+
+           (R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
+  if(R.fellback)
+    o.push('<div class="note">Every photo had something off, so the average used all of them rather than only the clean ones.</div>');
+
+  o.push('<div class="actions"><button class="danger" onclick="discard()">Discard this session</button><span class="sp"></span>'+
+         '<button class="primary" onclick="addToTracker()">Add to my tracker</button></div>');
+  o.push('<p class="hint">Photos are never edited. If something is off, change the setup and shoot again.</p>');
+  o.push('</div>');
+  return o.join('');
+}
+
+function cardDone(R){
+  return '<div class="card"><div class="done-big"><div class="tick">✓</div>'+
+         '<h2>Added to your tracker</h2>'+
+         '<p class="lead"><b>'+R.mean.toFixed(1)+'</b> on '+h(niceDate(S.date))+
+         (R.valid?'':' · kept out of the trend line because of the conditions you noted')+'</p></div>'+
+         '<div class="actions" style="justify-content:center">'+
+         '<a href="/tracker?person='+encodeURIComponent(S.person)+'" target="_blank"><button>View tracker</button></a>'+
+         '<button class="primary" onclick="newSession()">Start a new session</button></div></div>';
+}
+
+/* ---- wiring ---------------------------------------------------------------- */
+function wire(){
+  document.querySelectorAll('.ib').forEach(function(c){ c.onchange = function(){ sel[c.value] = c.checked; refreshUseBtn(); }; });
+  document.querySelectorAll('button.dir').forEach(function(b){
+    b.onclick = function(){ var base = S.browse.path;
+      browseTo(base + (base.charAt(base.length-1)==='/'?'':'/') + b.getAttribute('data-dir')); }; });
+  var det = document.getElementById('logdet');
+  if(det) det.addEventListener('toggle', function(){ ui.logOpen = det.open; });
+  var p = document.getElementById('path');
+  if(p) p.addEventListener('keydown', function(e){ if(e.key==='Enter') goPath(); });
+  var nn = document.getElementById('newname');
+  if(nn) nn.addEventListener('keydown', function(e){ if(e.key==='Enter') addPerson(); });
+}
+function refreshUseBtn(){
+  var b = document.querySelector('.actions .primary');
+  if(b && /selected/.test(b.textContent)) b.textContent = 'Use '+countSel()+' selected';
+}
+
+/* ---- actions --------------------------------------------------------------- */
+function pickPerson(){ var s = document.getElementById('pick'); S.person = s.value; S.date = null; sel = {}; load(); }
+function changePerson(){ S.person = null; render(); }
+function addPerson(){
+  var n = (document.getElementById('newname').value||'').trim();
+  if(!n) return;
+  api('/api/person', {name:n}).then(function(){ S.person = n; S.date = null; load(); }).catch(fail);
+}
+
+function sameAsLast(){ ui.prefill = (S.prev_checklist && S.prev_checklist.answers) || null; render(); }
+function saveConditions(){
+  var a = {};
+  document.querySelectorAll('.cl').forEach(function(c){ a[c.value] = c.checked; });
+  api('/api/checklist', {person:S.person, date:S.date, answers:a})
+    .then(function(){ ui.prefill = null; load(); }).catch(fail);
+}
+function redoConditions(){
+  if(S.scored){ return; }
+  ui.prefill = (S.checklist && S.checklist.answers) || null;
+  S.checklist = null; render();     // re-answer; the server keeps the history
+}
+
+function imgs(){ return (S.browse && S.browse.images) || []; }
+function pickRecent(){ sel={}; imgs().slice(0,10).forEach(function(f){sel[f.file]=true;}); render(); }
+function pickAll(){ sel={}; imgs().forEach(function(f){sel[f.file]=true;}); render(); }
+function pickNone(){ sel={}; render(); }
+function browseTo(p){ ui.browseDir = p; sel = {}; load(); }
 function goPath(){ browseTo(document.getElementById('path').value.trim()); }
 function goUp(){ if(S.browse && S.browse.parent) browseTo(S.browse.parent); }
 function goHome(){ browseTo(S.inbox_path); }
-
-function addPerson(){
-  var n = document.getElementById('newname').value.trim();
-  if(!n) return;
-  api('/api/person', {name:n}).then(function(){ S.person=n; sel={}; load(); })
-    .catch(function(e){ err(e.message); });
-}
-
 function doImport(){
   var files = Object.keys(sel).filter(function(k){return sel[k];});
-  if(!files.length){ err('Select some photos first.'); return; }
-  api('/api/import', {person:S.person, date:S.date, files:files,
-                      dir:(S.browse&&S.browse.path)||S.inbox_path})
-    .then(function(j){
-      sel = {};
-      if(j.moved_to_new_take){
-        S.date = j.session; S.prefill = null; S.reopen = false;
-        S.movedNote = j.moved_to_new_take;
-      }
-      load();
-    })
-    .catch(function(e){ err(e.message); });
+  if(!files.length){ fail(new Error('Tick at least one photo.')); return; }
+  api('/api/import', {person:S.person, date:S.date, files:files, dir:(S.browse&&S.browse.path)||S.inbox_path})
+    .then(function(j){ sel = {}; ui.forcePhotos = false; if(j.moved_to_new_take) S.date = j.session; load(); }).catch(fail);
 }
+function morePhotos(){ ui.forcePhotos = true; render(); }
+function goAnalyse(){ ui.forcePhotos = false; render(); }
 
-function saveChecklist(){
-  var a = {};
-  document.querySelectorAll('.cl').forEach(function(c){ a[c.value]=c.checked; });
-  api('/api/checklist', {person:S.person, date:S.date, answers:a,
-                         notes:(document.getElementById('clnotes')||{}).value||''})
-    .then(load).catch(function(e){ err(e.message); });
+function analyse(){
+  api('/api/score', {person:S.person, date:S.date}).then(poll).catch(fail);
 }
-
-function score(){
-  clearNotes();
-  api('/api/score', {person:S.person, date:S.date, oneoff:!!S.oneoff})
-    .then(function(){ poll(); }).catch(function(e){ err(e.message); });
-}
-
 function poll(){
   api('/api/job').then(function(j){
     S.job = j; render();
-    if(j.running) setTimeout(poll, 900); else load();
+    if(j.running) setTimeout(poll, 800); else load();
   });
 }
 
+function addToTracker(){
+  api('/api/add', {person:S.person, date:S.date}).then(function(){ load(); }).catch(fail);
+}
+function discard(){
+  var msg = 'Start over? The photos, answers and result for this session move to discarded/ (nothing is deleted).';
+  if(!confirm(msg)) return;
+  var reason = prompt('Why? (optional — kept with the discarded session)', '') || '';
+  api('/api/discard', {person:S.person, date:S.date, reason:reason})
+    .then(function(){ sel = {}; ui.prefill = null; load(); }).catch(fail);
+}
+function newSession(){
+  api('/api/reshoot', {person:S.person, date:S.date})
+    .then(function(j){ S.date = j.session; sel = {}; ui.prefill = null; load(); }).catch(fail);
+}
+
 load();
-</script></body></html>"""
+</script></body></html>
+'''
 
 
 # ----------------------------------------------------------------------------
@@ -1430,6 +1477,7 @@ ROUTES_POST = {
     '/api/notes': do_notes,
     '/api/reshoot': do_reshoot,
     '/api/discard': do_discard,
+    '/api/add': do_add,
 }
 
 
