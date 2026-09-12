@@ -51,6 +51,9 @@ var document = {
 };
 var location = { protocol: 'http:' };
 var window = {};
+// a camera that never answers: enough to render the camera card
+var navigator = { userAgent: 'harness',
+  mediaDevices: { getUserMedia: function(){ return new Promise(function(){}); } } };
 var alert = function(){};
 var confirm = function(){ return false; };
 var prompt = function(){ return ''; };
@@ -64,10 +67,12 @@ __SCRIPT__
 // --- drive it --------------------------------------------------------------
 var STATES = __STATES__;
 var failures = [];
+var UI_DEFAULT = JSON.parse(JSON.stringify(ui));
 STATES.forEach(function(st, i){
   try {
     S = st.state;
     sel = {};
+    ui = Object.assign({}, UI_DEFAULT, st.ui || {});
     render();
     var out = document.getElementById('app').innerHTML;
     // the wizard renders into three containers; check all of them
@@ -110,7 +115,7 @@ def base_state(**kw):
                             {'key': 'pose', 'label': 'Neutral expression'}],
         'checklist': None, 'checklist_stale': False, 'prev_checklist': None,
         'scored': False, 'result': None, 'baseline_luma': 121.3,
-        'has_b': False,
+        'has_b': False, 'capture': None, 'source': None, 'series_source': None,
         'preflight': {'available': False, 'why': 'not yet'},
         'job': {'running': False, 'label': '', 'rc': None, 'log': [],
                 'progress': {'phase': None, 'done': 0, 'total': 0, 'pct': 0},
@@ -155,8 +160,8 @@ def states():
         {'name': 'step 1: conditions', 'state': base_state(),
          'expect': ['Same setup as last time', 'id="c_light"', 'Continue',
                     '<details class="guide" open>', 'How to set up the shot',
-                    'Selfie camera is fine', 'AE/AF LOCK'],
-         'reject': ['Pick the photos', 'Analyse</button>']},
+                    'Pick one and keep it', 'AE/AF LOCK'],
+         'reject': ['Add the photos', 'Analyse</button>']},
         # later sessions: still there, collapsed
         {'name': 'step 1: conditions, returning',
          'state': base_state(prev_checklist=CHECKLIST_DONE),
@@ -166,9 +171,36 @@ def states():
          'state': base_state(prev_checklist=CHECKLIST_DONE),
          'expect': ['Same as ']},
         {'name': 'step 2: photos', 'state': base_state(checklist=CHECKLIST_DONE),
-         'expect': ['Pick the photos', 'Use 0 selected', 'Conditions: <b>all good',
+         'expect': ['Add the photos', 'Use 0 selected', 'Conditions: <b>all good',
                     'How to set up the shot'],
          'reject': ['Analyse</button>']},
+        # the Mac's camera is an option beside import, never instead of it
+        {'name': 'step 2: photos offers the camera',
+         'state': base_state(checklist=CHECKLIST_DONE),
+         'expect': ['Import from my phone', 'Use this Mac', 'class="on"']},
+        {'name': 'step 2: camera mode',
+         'state': base_state(checklist=CHECKLIST_DONE),
+         'ui': {'photoMode': 'camera'},
+         'expect': ['id="cam"', '<svg', '<ellipse', 'Start \u00b7 10 photos',
+                    'Import from my phone'],
+         'reject': ['Use 0 selected', 'built from phone photos']},
+        {'name': 'step 2: camera mode, phone tracker warns',
+         'state': base_state(checklist=CHECKLIST_DONE, series_source='import'),
+         'ui': {'photoMode': 'camera'},
+         'expect': ['built from phone photos']},
+        {'name': 'step 2: camera mode, refused',
+         'state': base_state(checklist=CHECKLIST_DONE),
+         'ui': {'photoMode': 'camera', 'camError': 'Camera access was refused.'},
+         'expect': ['Camera access was refused', 'try again'],
+         'reject': ['id="cam"']},
+        {'name': 'step 2: camera mode, adding more',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['cam_1.jpg', 'cam_2.jpg']),
+         'ui': {'photoMode': 'camera', 'forcePhotos': True},
+         'expect': ['Continue with 2', 'Take 10 more']},
+        {'name': 'step 3: ready, shot on the Mac',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'] * 10,
+                             source='mac-camera'),
+         'expect': ['Ready to analyse', '10</b> photos in this session, taken with this Mac']},
         {'name': 'step 2: photos, conditions flagged',
          'state': base_state(checklist=CHECKLIST_FAIL),
          'expect': ['Conditions: <b>problem noted']},
@@ -209,6 +241,12 @@ def states():
                                          excluded_reason='Frontal light'),
                              preflight=PREFLIGHT_GOOD),
          'expect': ['stay out of your trend line']},
+        {'name': 'step 5: result shot on a different camera',
+         'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'],
+                             result=dict(RESULT, luma_ok=True, fellback=False),
+                             preflight=PREFLIGHT_GOOD,
+                             source='mac-camera', series_source='import'),
+         'expect': ['compare two cameras', 'Add to my tracker']},
         {'name': 'step 5: no result produced',
          'state': base_state(checklist=CHECKLIST_DONE, staged=['a.jpg'],
                              result={'mean': None, 'n': 0},

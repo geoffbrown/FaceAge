@@ -551,6 +551,127 @@ def do_import(body):
             'staged': staged(name, date)}
 
 
+CAPTURE_MANIFEST = 'capture.json'
+BATCH_RE = re.compile(r'^\d{8}-\d{6}$')
+MAX_CAPTURE_BYTES = 12 << 20        # one 4K JPEG is well under this
+
+
+def capture_manifest(name, date):
+    """How this session's photos were captured, if the app captured them.
+
+    Absent for imported photos. Present, with source 'mac-camera', when the
+    frames came from the Mac's own camera via /api/capture.
+    """
+    p = os.path.join(session_dir(name, date), CAPTURE_MANIFEST)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def session_source(name, date):
+    """'mac-camera', 'import', or None when the session has no photos."""
+    m = capture_manifest(name, date)
+    if m and m.get('source'):
+        return m['source']
+    return 'import' if staged(name, date) else None
+
+
+def series_source(name):
+    """The camera behind the most recently logged session, so a session shot
+    on a different camera can be warned about before it joins the series.
+    A trend line that mixes two cameras compares two instruments, not two
+    dates."""
+    hist = os.path.join(results_dir(name), 'faceage_history.csv')
+    if not os.path.exists(hist):
+        return None
+    with open(hist) as fh:
+        dates = [(r.get('session_date') or '').strip() for r in csv.DictReader(fh)]
+    dates = [d for d in dates if d]
+    if not dates:
+        return None
+    return session_source(name, max(dates))
+
+
+def do_capture(body):
+    """Save one frame from the Mac's camera into the session folder.
+
+    The browser captures the frame (it is the only thing that can reach the
+    camera); this end only writes bytes. Frames arrive one at a time so the
+    ten-shot sequence survives a slow write, and the first frame of a batch
+    opens a new take when the session is already closed, exactly as import
+    does. Nothing here touches the tracker.
+    """
+    name = safe_subject(body.get('person'))
+    date = safe_date(body.get('date'))
+    batch = str(body.get('batch') or '')
+    if not BATCH_RE.match(batch):
+        raise ValueError('bad batch stamp')
+    try:
+        index = int(body.get('index'))
+    except (TypeError, ValueError):
+        raise ValueError('bad frame index')
+    if not 1 <= index <= 99:
+        raise ValueError('bad frame index')
+
+    data = body.get('image') or ''
+    if ',' in data:                         # data:image/jpeg;base64,....
+        head, data = data.split(',', 1)
+        if not head.startswith('data:image/jpeg'):
+            raise ValueError('frame must be a JPEG')
+    import base64
+    import binascii
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError('frame is not valid base64')
+    if raw[:3] != b'\xff\xd8\xff':
+        raise ValueError('frame is not a JPEG')
+    if len(raw) > MAX_CAPTURE_BYTES:
+        raise ValueError('frame too large')
+
+    moved_to = None
+    if session_scored(name, date):
+        date = next_take(name, date)
+        moved_to = date
+    dest = session_dir(name, date)
+    os.makedirs(dest, exist_ok=True)
+
+    fname = 'cam_%s_%02d.jpg' % (batch, index)
+    target = os.path.join(dest, fname)
+    if os.path.exists(target):
+        raise ValueError('%s already exists' % fname)
+    tmp = target + '.tmp'
+    with open(tmp, 'wb') as fh:
+        fh.write(raw)
+    os.replace(tmp, target)
+
+    # One manifest per session, appended per frame, so a sequence that stops
+    # halfway still records what was saved and how.
+    settings = body.get('settings') if isinstance(body.get('settings'), dict) else {}
+    keep = {k: settings.get(k) for k in ('camera', 'width', 'height', 'frame_rate',
+                                          'device_id', 'mirrored', 'quality',
+                                          'user_agent') if settings.get(k) is not None}
+    doc = capture_manifest(name, date) or {
+        'source': 'mac-camera', 'session_date': date, 'person': name,
+        'frames': []}
+    doc['settings'] = keep or doc.get('settings') or {}
+    doc['frames'].append({
+        'file': fname, 'batch': batch, 'index': index, 'bytes': len(raw),
+        'captured_at': datetime.datetime.now().replace(microsecond=0).isoformat(),
+        'luma': settings.get('luma')})
+    mp = os.path.join(dest, CAPTURE_MANIFEST)
+    with open(mp + '.tmp', 'w') as fh:
+        json.dump(doc, fh, indent=2)
+    os.replace(mp + '.tmp', mp)
+
+    return {'ok': True, 'file': fname, 'session': date,
+            'moved_to_new_take': moved_to, 'staged': staged(name, date)}
+
+
 def do_checklist(body):
     """Record the §1 validity answers. Written BEFORE scoring, always."""
     name = safe_subject(body.get('person'))
@@ -954,6 +1075,9 @@ def state(person=None, date=None, browse=None):
                   'has_b': bool(fa_anchors(person).get('B')),
                   'scored': session_scored(person, date),
                   'result': session_result(person, date),
+                  'capture': capture_manifest(person, date),
+                  'source': session_source(person, date),
+                  'series_source': series_source(person),
                   'baseline_luma': baseline_luma(person),
                   'preflight': do_preflight(person, date)})
     return s
@@ -1063,6 +1187,26 @@ select{padding-right:32px}
 .staged{margin-top:14px;font-size:13.5px;color:var(--ink2)}
 .staged b{color:var(--ink)}
 
+/* camera */
+.modes{display:flex;gap:8px;margin-bottom:16px}
+.modes button{flex:1;padding:12px 14px;text-align:left;border-radius:12px;line-height:1.3}
+.modes button.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--card)}
+.modes small{display:block;font-weight:500;color:var(--ink3);font-size:12.5px;margin-top:2px}
+.camwrap{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:16/9;max-width:100%}
+.camwrap video{width:100%;height:100%;object-fit:cover;display:block;transform:scaleX(-1)}
+.camwrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.camwrap .cd{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:110px;font-weight:700;color:#fff;text-shadow:0 2px 28px rgba(0,0,0,.7);pointer-events:none}
+.camwrap .flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .3s}
+.camwrap .flash.on{opacity:.65;transition:none}
+.camwrap .msg{position:absolute;left:0;right:0;bottom:0;padding:9px 14px;background:rgba(0,0,0,.55);
+  color:#fff;font-size:14px;text-align:center;font-variant-numeric:tabular-nums}
+.camstats{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:10px;font-size:13.5px;color:var(--ink2);
+  font-variant-numeric:tabular-nums}
+.camstats b{color:var(--ink);font-weight:600}
+.camstats .good{color:var(--good)} .camstats .good b{color:var(--good)}
+.camstats .bad{color:var(--bad)} .camstats .bad b{color:var(--bad)}
+
 /* progress */
 .prog{margin:8px 0 6px}
 .bar{height:10px;border-radius:99px;background:var(--line);overflow:hidden}
@@ -1131,7 +1275,8 @@ pre.log{margin:8px 0 0;padding:10px;background:var(--bg);border:1px solid var(--
 </div>
 <script>
 'use strict';
-var S = null, sel = {}, ui = {browseDir:null, prefill:null, note:null, logOpen:false};
+var S = null, sel = {}, ui = {browseDir:null, prefill:null, note:null, logOpen:false,
+                             photoMode:'import', camError:null};
 
 var STEPS = ['Who','Conditions','Photos','Analyse','Result'];
 
@@ -1191,6 +1336,7 @@ function stepOf(){
 /* ---- render ---------------------------------------------------------------- */
 function render(){
   var step = stepOf();
+  if(!(step===2 && ui.photoMode==='camera')) camStop();
   document.getElementById('foot').innerHTML =
     'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>';
 
@@ -1252,7 +1398,7 @@ function cardWho(){
 var GUIDE = [
   ['Light', 'Blinds closed, ceiling light off. One desk lamp in front of you, a little above eye level, bounced off a wall so it does not glare. Tape its position. This is the big one: lighting alone moved the result by 5 years in your own test shots.'],
   ['Shave', 'Shave the morning of every session. Stubble changes length daily, and the model looks hardest at exactly that part of the face.'],
-  ['Phone', 'Selfie camera is fine — but prop it, never hold it. A shelf or tripod about arm\u2019s length away, and the 3-second timer. Mark where the phone sits and where you stand.'],
+  ['Camera', 'Either your phone\u2019s selfie camera, propped and never hand-held, or this Mac\u2019s camera with the app taking the shots. Pick one and keep it: sessions from two different cameras cannot be compared. Mark where the camera sits and where you sit.'],
   ['Framing', 'Your face should fill about 85% of the frame height: top of head near the top edge, chin near the bottom, not touching either. The app will tell you the exact number afterwards.'],
   ['Background', 'A plain wall or a hung sheet. Slats and patterns throw striped shadows and confuse the face detector.'],
   ['On the phone', 'Tap and hold on your face until AE/AF LOCK appears, so it stops re-metering between shots. Portrait mode off. Glasses off, hair off the forehead.'],
@@ -1270,7 +1416,7 @@ function guideHtml(open){
 var TIPS = {
   grooming:'Same as your very first session, whatever that was.',
   light:'Same lamp, same spot, blinds closed. Not the ceiling light.',
-  camera:'Selfie camera is fine. Prop the phone, use the timer, and mark where it sits and where you stand.',
+  camera:'The same phone propped in the same spot, or this Mac in the same spot. Never a different camera, never hand-held.',
   pose:'Look straight ahead, relaxed face, mouth closed.',
   photoday:'No alcohol for two days, decent sleep, not straight after a shower or a workout.',
   skin:'No sunburn, breakout, or allergy flare on the forehead or cheeks.'
@@ -1295,11 +1441,20 @@ function cardConditions(){
 }
 
 /* ---- 3 · photos ------------------------------------------------------------ */
+function modesHtml(){
+  var cam = ui.photoMode==='camera';
+  return '<div class="modes">'+
+    '<button class="'+(cam?'':'on')+'" onclick="setMode(\'import\')">Import from my phone<small>Photos you already took, AirDropped to this Mac</small></button>'+
+    '<button class="'+(cam?'on':'')+'" onclick="setMode(\'camera\')">Use this Mac\u2019s camera<small>Live framing guide, 10 photos taken for you</small></button>'+
+    '</div>';
+}
+
 function cardPhotos(){
+  if(ui.photoMode==='camera') return cardCamera();
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
-  var o = ['<div class="card"><h2>Pick the photos</h2>',
+  var o = ['<div class="card"><h2>Add the photos</h2>',
            '<p class="lead">Ten or so from this session, all from the same spot. AirDrop lands them in Downloads.</p>',
-           guideHtml(false)];
+           modesHtml(), guideHtml(false)];
   o.push('<div class="pathbar"><button onclick="goUp()"'+(B.parent?'':' disabled')+' title="up">↑</button>'+
          '<input type="text" id="path" value="'+h(B.path)+'"><button onclick="goPath()">Go</button>'+
          '<button onclick="goHome()">Downloads</button></div>');
@@ -1331,10 +1486,195 @@ function cardPhotos(){
 }
 function countSel(){ return Object.keys(sel).filter(function(k){return sel[k];}).length; }
 
+/* ---- 3b · the Mac camera ----------------------------------------------------- */
+var SHOTS = 10, SHOT_GAP_MS = 900, COUNTDOWN = 3;
+var CAM = {stream:null, starting:false, running:false, cancel:false, luma:null, w:0, h:0, label:'', tick:null};
+
+function cameraSupported(){
+  return typeof navigator !== 'undefined' && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+/* Face oval at 85% of frame height, a centre line, and an eye line. The SVG
+   stretches with the video box, so everything is in frame-relative units. */
+function overlaySvg(){
+  var cy = 47, ry = 38.25, rx = 27.5, ey = 41;
+  return '<svg viewBox="0 0 160 90" preserveAspectRatio="none">'+
+    '<path fill="rgba(0,0,0,.38)" fill-rule="evenodd" d="M0 0H160V90H0Z '+
+    'M'+(80-rx)+' '+cy+'a'+rx+' '+ry+' 0 1 0 '+(2*rx)+' 0a'+rx+' '+ry+' 0 1 0 '+(-2*rx)+' 0Z"/>'+
+    '<ellipse cx="80" cy="'+cy+'" rx="'+rx+'" ry="'+ry+'" fill="none" stroke="#fff" stroke-width=".6" stroke-dasharray="2 1.5" vector-effect="non-scaling-stroke"/>'+
+    '<line x1="80" y1="'+(cy-ry)+'" x2="80" y2="'+(cy+ry)+'" stroke="rgba(255,255,255,.55)" stroke-width=".4" vector-effect="non-scaling-stroke"/>'+
+    '<line x1="'+(80-rx)+'" y1="'+ey+'" x2="'+(80+rx)+'" y2="'+ey+'" stroke="rgba(255,255,255,.55)" stroke-width=".4" stroke-dasharray="1 1" vector-effect="non-scaling-stroke"/>'+
+    '</svg>';
+}
+
+function cardCamera(){
+  var o = ['<div class="card"><h2>Add the photos</h2>',
+           '<p class="lead">Sit where you always sit, fill the oval, eyes on the dotted line. The app counts down and takes '+SHOTS+' photos for you.</p>',
+           modesHtml()];
+  if(S.series_source && S.series_source!=='mac-camera')
+    o.push('<div class="note">Your tracker so far is built from phone photos. Photos from this camera cannot be compared with those, so if you switch, switch for good and treat the first Mac session as your new starting point.</div>');
+  if(!cameraSupported()){
+    o.push('<div class="err">This browser cannot use the camera. Try Safari or Chrome, or import from your phone instead.</div></div>');
+    return o.join('');
+  }
+  if(ui.camError){
+    o.push('<div class="err">'+h(ui.camError)+'</div>');
+    o.push('<p class="hint">Allow camera access for 127.0.0.1 in the browser’s address bar or in System Settings › Privacy &amp; Security › Camera, then <button class="quiet" style="padding:2px 6px" onclick="camRetry()">try again</button>.</p></div>');
+    return o.join('');
+  }
+  o.push('<div class="camwrap" id="camwrap"><video id="cam" autoplay playsinline muted></video>'+overlaySvg()+
+         '<div class="flash" id="camflash"></div><div class="cd" id="camcd"></div>'+
+         '<div class="msg" id="cammsg">'+(CAM.stream?'Line up, then press Start':'Starting the camera…')+'</div></div>');
+  o.push('<div class="camstats"><span id="camlight"></span><span id="camres"></span></div>');
+  o.push(guideHtml(false));
+  o.push('<div class="actions">');
+  if(S.staged.length)
+    o.push('<span class="staged" style="margin:0">In this session: <b>'+S.staged.length+'</b></span>');
+  o.push('<span class="sp"></span>');
+  if(S.staged.length)
+    o.push('<button class="quiet" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>');
+  o.push('<button class="primary" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
+         (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button></div>');
+  o.push('<p class="hint">Photos are saved full size, unmirrored, straight into this session’s folder. Keep the Mac in the same place every time; mark it if you can.</p>');
+  o.push('</div>');
+  return o.join('');
+}
+
+function setMode(m){
+  if(ui.photoMode===m) return;
+  ui.photoMode = m; ui.camError = null; render();
+}
+function camRetry(){ ui.camError = null; render(); }
+
+function camStart(){
+  if(CAM.stream || CAM.starting || ui.camError || !cameraSupported()) return;
+  CAM.starting = true;
+  navigator.mediaDevices.getUserMedia({audio:false,
+      video:{facingMode:'user', width:{ideal:1920}, height:{ideal:1080}}})
+    .then(function(stream){
+      CAM.starting = false; CAM.stream = stream;
+      var t = stream.getVideoTracks()[0], st = (t && t.getSettings) ? t.getSettings() : {};
+      CAM.label = (t && t.label) || ''; CAM.w = st.width||0; CAM.h = st.height||0; CAM.fps = st.frameRate||null; CAM.id = st.deviceId||'';
+      camAttach(); camTick();
+    })
+    .catch(function(e){
+      CAM.starting = false;
+      ui.camError = (e && e.name==='NotAllowedError') ? 'Camera access was refused.' :
+                    (e && e.name==='NotFoundError') ? 'No camera found on this Mac.' :
+                    'Could not start the camera: '+(e && e.message ? e.message : e);
+      render();
+    });
+}
+function camAttach(){
+  var v = document.getElementById('cam');
+  if(!v || !CAM.stream) return;
+  if(v.srcObject !== CAM.stream){ v.srcObject = CAM.stream; if(v.play) { var p = v.play(); if(p && p.catch) p.catch(function(){}); } }
+  var wrap = document.getElementById('camwrap');
+  if(wrap && CAM.w && CAM.h) wrap.style.aspectRatio = CAM.w+' / '+CAM.h;
+  var m = document.getElementById('cammsg'); if(m && !CAM.running) m.textContent = 'Line up, then press Start';
+  var b = document.getElementById('camstart'); if(b && !CAM.running) b.disabled = false;
+  var r = document.getElementById('camres'); if(r) r.innerHTML = CAM.w ? h(CAM.label||'camera')+' · <b>'+CAM.w+'×'+CAM.h+'</b>' : '';
+}
+function camStop(){
+  if(CAM.tick){ clearTimeout(CAM.tick); CAM.tick = null; }
+  if(CAM.stream){ CAM.stream.getTracks().forEach(function(t){ t.stop(); }); }
+  CAM.stream = null; CAM.starting = false; CAM.running = false; CAM.luma = null;
+}
+
+/* Mean brightness inside the oval, on the same 0–255 scale the analysis
+   reports, refreshed twice a second. A guide for lining up the lamp, not the
+   measurement itself: that comes from the face crop after analysis. */
+function camLuma(){
+  var v = document.getElementById('cam');
+  if(!v || !v.videoWidth || typeof document.createElement !== 'function') return null;
+  var c = camLuma.c || (camLuma.c = document.createElement('canvas'));
+  if(!c.getContext) return null;
+  var W = 64, H = 36; c.width = W; c.height = H;
+  var g = c.getContext('2d', {willReadFrequently:true}); g.drawImage(v, 0, 0, W, H);
+  var d = g.getImageData(0, 0, W, H).data, sum = 0, n = 0;
+  var cx = W/2, cy = H*0.522, rx = W*0.172, ry = H*0.425;
+  for(var y=0;y<H;y++) for(var x=0;x<W;x++){
+    var dx=(x+0.5-cx)/rx, dy=(y+0.5-cy)/ry;
+    if(dx*dx+dy*dy>1) continue;
+    var i=(y*W+x)*4; sum += 0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; n++;
+  }
+  return n ? sum/n : null;
+}
+function camTick(){
+  if(!CAM.stream) return;
+  var L = camLuma(); CAM.luma = L;
+  var el = document.getElementById('camlight');
+  if(el){
+    if(L==null) el.innerHTML = '';
+    else {
+      var s = 'brightness in the oval <b>'+Math.round(L)+'</b>', cls = '';
+      if(S.baseline_luma!=null){
+        var d = L - S.baseline_luma;
+        cls = Math.abs(d) <= 5 ? 'good' : 'bad';
+        s += ' · baseline '+Math.round(S.baseline_luma)+(Math.abs(d)<=5 ? ' ✓' :
+             (d>0 ? ' — too bright, dim the lamp or close the blinds' : ' — too dark, bring the lamp closer'));
+      } else if(L < 70) { cls='bad'; s += ' — dark; add light in front of you'; }
+      else if(L > 190) { cls='bad'; s += ' — very bright; dim it'; }
+      el.className = cls; el.innerHTML = s;
+    }
+  }
+  CAM.tick = setTimeout(camTick, 500);
+}
+
+function grabFrame(){
+  var v = document.getElementById('cam');
+  var c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);          // raw frame, not the mirrored preview
+  return c.toDataURL('image/jpeg', 0.95);
+}
+function camSay(t){ var m = document.getElementById('cammsg'); if(m) m.textContent = t; }
+function camCount(t){ var c = document.getElementById('camcd'); if(c) c.textContent = t; }
+function camFlash(){
+  var f = document.getElementById('camflash'); if(!f) return;
+  f.className = 'flash on'; setTimeout(function(){ f.className = 'flash'; }, 60);
+}
+function stamp(){
+  var d = new Date(), p = function(n){ return (n<10?'0':'')+n; };
+  return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());
+}
+
+function startCapture(){
+  if(!CAM.stream || CAM.running) return;
+  CAM.running = true; CAM.cancel = false;
+  var b = document.getElementById('camstart'); if(b){ b.disabled = true; b.textContent = 'Taking photos…'; }
+  var batch = stamp(), saved = 0, n = COUNTDOWN;
+  var settings = {camera:CAM.label, width:CAM.w, height:CAM.h, frame_rate:CAM.fps, device_id:CAM.id,
+                  mirrored:false, quality:0.95, user_agent:(typeof navigator!=='undefined'&&navigator.userAgent)||''};
+  function finish(err){
+    CAM.running = false; camCount('');
+    if(err) fail(err);
+    load();                                        // lands on Analyse: staged count comes from disk
+  }
+  function shot(i){
+    if(i > SHOTS){ camSay('Done · '+saved+' saved'); return finish(null); }
+    camSay('Hold still · '+i+' of '+SHOTS); camFlash();
+    var img;
+    try { img = grabFrame(); } catch(e){ return finish(e); }
+    api('/api/capture', {person:S.person, date:S.date, batch:batch, index:i, image:img,
+                         settings:Object.assign({luma:CAM.luma!=null?Math.round(CAM.luma*10)/10:null}, settings)})
+      .then(function(j){ saved++; if(j.moved_to_new_take) S.date = j.session;
+                         setTimeout(function(){ shot(i+1); }, SHOT_GAP_MS); })
+      .catch(finish);
+  }
+  function tick(){
+    if(n === 0){ camCount(''); camSay('Hold still'); return shot(1); }
+    camCount(String(n)); camSay('Neutral face, mouth closed, look at the camera'); n--;
+    setTimeout(tick, 1000);
+  }
+  tick();
+}
+
 /* ---- 4 · analyse ----------------------------------------------------------- */
 function cardAnalyse(){
   var o = ['<div class="card"><h2>Ready to analyse</h2>',
-           '<p class="lead"><b>'+S.staged.length+'</b> photo'+(S.staged.length===1?'':'s')+' in this session. This takes about half a minute. Nothing is saved to your tracker until you say so.</p>'];
+           '<p class="lead"><b>'+S.staged.length+'</b> photo'+(S.staged.length===1?'':'s')+' in this session'+
+           (S.source==='mac-camera'?', taken with this Mac\u2019s camera':'')+'. This takes about half a minute. Nothing is saved to your tracker until you say so.</p>'];
   o.push('<div class="actions"><button class="quiet" onclick="morePhotos()">Add more photos</button><span class="sp"></span>'+
          '<button class="primary" onclick="analyse()">Analyse</button></div></div>');
   return o.join('');
@@ -1418,6 +1758,10 @@ function cardResult(){
            (R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
   if(R.fellback)
     o.push('<div class="note">Every photo had something off, so the average used all of them rather than only the clean ones.</div>');
+  if(S.source && S.series_source && S.source !== S.series_source)
+    o.push('<div class="note">This session was shot on '+(S.source==='mac-camera'?'this Mac’s camera':'your phone')+
+           ', but your tracker so far is from '+(S.series_source==='mac-camera'?'the Mac’s camera':'phone photos')+
+           '. Adding it would compare two cameras, not two dates.</div>');
 
   o.push('<div class="actions"><button class="danger" onclick="discard()">Discard this session</button><span class="sp"></span>'+
          '<button class="primary" onclick="addToTracker()">Add to my tracker</button></div>');
@@ -1448,6 +1792,7 @@ function wire(){
   if(p) p.addEventListener('keydown', function(e){ if(e.key==='Enter') goPath(); });
   var nn = document.getElementById('newname');
   if(nn) nn.addEventListener('keydown', function(e){ if(e.key==='Enter') addPerson(); });
+  if(stepOf()===2 && ui.photoMode==='camera'){ camStart(); camAttach(); }
 }
 function refreshUseBtn(){
   var b = document.querySelector('.actions .primary');
@@ -1537,6 +1882,7 @@ load();
 ROUTES_POST = {
     '/api/person': do_create_person,
     '/api/import': do_import,
+    '/api/capture': do_capture,
     '/api/checklist': do_checklist,
     '/api/score': do_score,
     '/api/notes': do_notes,
@@ -1612,7 +1958,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({'error': 'not found'}, 404)
         try:
             n = int(self.headers.get('Content-Length') or 0)
-            if n > 1 << 20:
+            # A camera frame is a base64 JPEG; everything else is a few KB.
+            limit = (MAX_CAPTURE_BYTES * 4 // 3 + 4096) if path == '/api/capture' else 1 << 20
+            if n > limit:
                 return self._json({'error': 'payload too large'}, 413)
             body = json.loads(self.rfile.read(n) or b'{}')
             return self._json(fn(body))
