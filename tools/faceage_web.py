@@ -919,6 +919,77 @@ def do_remove(body):
             'remaining': len(keep)}
 
 
+def do_delete(body):
+    """Delete sessions for good: the tracker rows AND the photos, results and
+    checklist on disk. Nothing is archived. The only trace left is a line in
+    deleted.csv with the date, the number it had, and when.
+
+    This exists because the person asked for a real delete. The discard and
+    remove paths keep things; this one does not, and the page says so before
+    it runs.
+    """
+    name = safe_subject(body.get('person'))
+    dates = body.get('dates') or ([body['date']] if body.get('date') else [])
+    if not isinstance(dates, list) or not dates:
+        raise ValueError('no sessions given')
+    dates = [safe_date(d) for d in dates]
+    res = results_dir(name)
+    hist = os.path.join(res, 'faceage_history.csv')
+    means = {}
+    if os.path.exists(hist):
+        with open(hist) as fh:
+            for r in csv.DictReader(fh):
+                means[(r.get('session_date') or '').strip()] = r.get('mean') or ''
+    gone = []
+    for date in dates:
+        had = False
+        sd = session_dir(name, date)
+        if os.path.isdir(sd):
+            shutil.rmtree(sd)
+            had = True
+        for fname in ('%s_summary.json' % date, '%s_per_image.csv' % date):
+            fp = os.path.join(res, fname)
+            if os.path.exists(fp):
+                os.remove(fp)
+                had = True
+        cl = checklist_path(name, date)
+        if os.path.exists(cl):
+            os.remove(cl)
+            had = True
+        for path, key in ((hist, 'session_date'),
+                          (os.path.join(res, 'session_validity.csv'), 'session_date')):
+            if not os.path.exists(path):
+                continue
+            with open(path) as fh:
+                rows = list(csv.DictReader(fh))
+                cols = list(rows[0].keys()) if rows else []
+            keep = [r for r in rows if (r.get(key) or '').strip() != date]
+            if cols and len(keep) != len(rows):
+                had = True
+                tmp = path + '.tmp'
+                with open(tmp, 'w', newline='') as fh:
+                    w = csv.DictWriter(fh, fieldnames=cols)
+                    w.writeheader()
+                    w.writerows(keep)
+                os.replace(tmp, path)
+        if had:
+            gone.append(date)
+    if gone:
+        os.makedirs(res, exist_ok=True)
+        log = os.path.join(res, 'deleted.csv')
+        new = not os.path.exists(log)
+        with open(log, 'a', newline='') as fh:
+            if new:
+                fh.write('session,deleted_at,mean\n')
+            for date in gone:
+                fh.write('%s,%s,%s\n' % (
+                    date, datetime.datetime.now().replace(microsecond=0).isoformat(),
+                    means.get(date, '')))
+        JOB.clear()
+        build_chart(name)
+    return {'ok': True, 'deleted': gone}
+
+
 def do_score(body):
     """Analyse the staged photos. Never writes to the tracker.
 
@@ -2281,6 +2352,7 @@ ROUTES_POST = {
     '/api/add': do_add,
     '/api/remove': do_remove,
     '/api/reveal': do_reveal,
+    '/api/delete': do_delete,
     '/api/person/rename': do_rename,
 }
 
