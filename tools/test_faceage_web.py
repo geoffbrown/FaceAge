@@ -628,6 +628,48 @@ class TestTakes(WebTestCase):
         self.assertEqual(rows[0]['label'], '2026-09-12b')
 
 
+class TestScoredSessionIsClosed(WebTestCase):
+    """Importing into a scored session left a checklist describing an earlier
+    capture, a pre-flight describing earlier photos, and a number already in
+    the series. Opening the next take resets all three by construction."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        self.put_inbox('IMG_1.jpg', 'IMG_2.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-12',
+                          'files': ['IMG_1.jpg']})
+
+    def test_import_into_unscored_session_stays_put(self):
+        r = self.w.do_import({'person': 'me', 'date': '2026-09-12',
+                              'files': ['IMG_2.jpg']})
+        self.assertEqual(r['session'], '2026-09-12')
+        self.assertIsNone(r['moved_to_new_take'])
+        self.assertEqual(len(r['staged']), 2)
+
+    def test_import_into_scored_session_opens_the_next_take(self):
+        self.history('me', '2026-09-12')
+        r = self.w.do_import({'person': 'me', 'date': '2026-09-12',
+                              'files': ['IMG_2.jpg']})
+        self.assertEqual(r['session'], '2026-09-12b')
+        self.assertEqual(r['moved_to_new_take'], '2026-09-12b')
+        self.assertEqual(r['staged'], ['IMG_2.jpg'])
+
+    def test_the_new_take_starts_clean(self):
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-12', 'answers': a})
+        self.history('me', '2026-09-12')
+        r = self.w.do_import({'person': 'me', 'date': '2026-09-12',
+                              'files': ['IMG_2.jpg']})
+        new = r['session']
+        self.assertIsNone(self.w.read_checklist('me', new))
+        self.assertFalse(self.w.session_scored('me', new))
+        self.assertIsNone(self.w.session_result('me', new))
+        # and the failed take is untouched
+        self.assertFalse(self.w.read_checklist('me', '2026-09-12')['valid'])
+
+
 class TestPrefill(WebTestCase):
     def setUp(self):
         WebTestCase.setUp(self)

@@ -291,7 +291,7 @@ def main():
     suspect = [r for r in rows if r['_suspect']]
 
     tiles = [
-        ('Latest FaceAge', '%.2f' % last['mean'], last['label'], ''),
+        ('Latest in series', '%.2f' % last['mean'], last['label'], ''),
         # §3: pairwise deltas are not interpreted, only the fitted trend. The
         # tile therefore reports the fitted slope and its verdict, not the
         # last-minus-first difference, which is the number most likely to be
@@ -302,9 +302,12 @@ def main():
           if trend.get('ok') else 'needs 3+ sessions in the series'),
          ('' if not trend.get('ok') or not trend['detected']
           else ('up' if trend['slope_per_month'] > 0 else 'down'))),
-        ('Sessions logged', str(len(rows)),
-         '%d photo%s total' % (sum(r['n'] for r in rows),
-                               '' if sum(r['n'] for r in rows) == 1 else 's'), ''),
+        # "logged" and "in the series" are different counts, and conflating
+        # them hid excluded sessions entirely.
+        ('Sessions in series', str(len(rows)),
+         ('%d photo%s' % (sum(r['n'] for r in rows),
+                          '' if sum(r['n'] for r in rows) == 1 else 's'))
+         + (' \u00b7 %d excluded' % len(excluded) if excluded else ''), ''),
         ('Result (§3)',
          (trend['verdict'].upper() if trend.get('ok') else 'NOT YET'),
          ('CI excludes zero' if trend.get('ok') and trend['detected']
