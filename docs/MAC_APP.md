@@ -48,11 +48,21 @@ The exposure baseline is per camera: the first logged session shot on that camer
 baseline says nothing about how bright the Mac's camera should read, so a Mac session is
 never held to one; its first logged session sets the Mac baseline instead.
 
-The tracker names the camera per session (from `capture.json`; a session without one was
-imported, i.e. the phone) and notes when a series mixes cameras. A session can be removed
-from the tracker there or from the app: only the history row goes, the photos and result
-stay on disk so it can be added back, and the removal is logged with its reason in
-`removed.csv` (flagged when it falls on or after the baseline anchor B).
+The tracker is written for the person, not the protocol. It leads with the latest number
+and one of six fixed plain-language states (too early to call, early days, holding steady,
+trending younger, trending older, two cameras in the mix), each derived from the
+pre-registered trend and never invented. One chart: FaceAge per session, camera carried by
+shape and hue, sessions before the start line hollow, the fitted trend dashed once three
+sessions exist. A consistency strip says whether each session matched the light and passed
+every photo. Session rows expand for spread, brightness, flagged photos and notes; column
+names explain themselves on hover. The slope, its interval, the formal verdict and the
+brightness chart live under "The numbers behind this". The camera per session comes from
+`capture.json`; brightness is compared within a camera only.
+
+Deleting is real there: a row's Delete, or Edit and a selection, removes the tracker row
+and the photos, results and checklist from disk after a confirmation, and leaves one line in
+`deleted.csv`. The app's done card keeps the softer "remove from the tracker" that leaves
+the files in place (`removed.csv`). `faceage reset` moves the whole data folder aside.
 
 The rule that survives is **one camera for the whole series, never switched**. The app
 records which camera produced each session and warns before a session from a different

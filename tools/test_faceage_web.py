@@ -996,12 +996,13 @@ class TestRemoveFromTracker(WebTestCase):
         out = self.w.build_chart('me')
         with open(out) as fh:
             page = fh.read()
-        self.assertIn('<th>Camera</th>', page)
-        self.assertIn('<td>2026-09-10</td><td>Phone</td>', page)
-        self.assertIn('<td>2026-09-11</td><td>Mac</td>', page)
+        self.assertIn('>Camera</span>', page)
+        self.assertIn('<td class="d">2026-09-10</td><td>Phone</td>', page)
+        self.assertIn('<td class="d">2026-09-11</td><td>Mac</td>', page)
         self.assertIn('more than one camera', page)
-        self.assertIn('data-session="2026-09-11" title="Remove', page)
-        self.assertIn("'/api/remove'", page)
+        self.assertIn('Two cameras in the mix', page)
+        self.assertIn('class="btn sm del" data-session="2026-09-11"', page)
+        self.assertIn("'/api/delete'", page)
 
 
 class TestReveal(WebTestCase):
@@ -1040,9 +1041,124 @@ class TestReveal(WebTestCase):
         self.history('me', '2026-09-10')
         with open(self.w.build_chart('me')) as fh:
             page = fh.read()
-        self.assertIn('class="rm fo" data-session="2026-09-10"', page)
+        self.assertIn('class="btn sm fo" data-session="2026-09-10"', page)
         self.assertIn('id="open-results"', page)
         self.assertIn("'/api/reveal'", page)
+
+
+class TestDelete(WebTestCase):
+    """The one path that destroys data. It removes the tracker row, the
+    photos, the results and the checklist, logs the date and number, and
+    touches nothing else."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        for d in ('2026-09-06', '2026-09-11', '2026-09-12'):
+            self.put_inbox('IMG_%s.jpg' % d)
+            self.w.do_import({'person': 'me', 'date': d, 'files': ['IMG_%s.jpg' % d]})
+            self.history('me', d)
+            with open(os.path.join(self.w.results_dir('me'), '%s_summary.json' % d), 'w') as fh:
+                json.dump({'mean': 44.1, 'n': 10, 'luma': 121.3}, fh)
+            self.w.do_checklist({'person': 'me', 'date': d, 'answers': {}}) if False else None
+
+    def test_deletes_rows_and_files_for_the_given_sessions(self):
+        r = self.w.do_delete({'person': 'me', 'dates': ['2026-09-06', '2026-09-11']})
+        self.assertEqual(r['deleted'], ['2026-09-06', '2026-09-11'])
+        for d in ('2026-09-06', '2026-09-11'):
+            self.assertFalse(os.path.exists(self.w.session_dir('me', d)))
+            self.assertFalse(os.path.exists(os.path.join(self.w.results_dir('me'), '%s_summary.json' % d)))
+            self.assertFalse(self.w.session_scored('me', d))
+        self.assertTrue(self.w.session_scored('me', '2026-09-12'))
+        self.assertEqual(self.w.staged('me', '2026-09-12'), ['IMG_2026-09-12.jpg'])
+
+    def test_logged(self):
+        self.w.do_delete({'person': 'me', 'dates': ['2026-09-06']})
+        with open(os.path.join(self.w.results_dir('me'), 'deleted.csv')) as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(rows[0]['session'], '2026-09-06')
+        self.assertEqual(rows[0]['mean'], '44.1')
+
+    def test_unknown_session_is_a_no_op(self):
+        r = self.w.do_delete({'person': 'me', 'dates': ['2026-09-30']})
+        self.assertEqual(r['deleted'], [])
+        self.assertFalse(os.path.exists(os.path.join(self.w.results_dir('me'), 'deleted.csv')))
+
+    def test_bad_input_refused(self):
+        for body in ({'person': 'me'}, {'person': 'me', 'dates': ['../x']},
+                     {'person': 'me', 'dates': 'no'}):
+            with self.assertRaises(ValueError, msg=str(body)):
+                self.w.do_delete(body)
+
+    def test_route(self):
+        self.assertIs(self.w.ROUTES_POST['/api/delete'], self.w.do_delete)
+
+
+class TestTrackerPage(WebTestCase):
+    """The tracker is a Python string wrapped around JavaScript. A stray escape
+    turns into a newline inside a JS literal and the whole page goes dead:
+    folder, delete and notes all stop working with no error on screen. That
+    shipped once. So: execute the script through node, every time."""
+
+    def build(self):
+        self.person()
+        for d, luma in (('2026-09-06', 128.6), ('2026-09-11', 123.9)):
+            self.put_inbox('IMG_%s.jpg' % d)
+            self.w.do_import({'person': 'me', 'date': d, 'files': ['IMG_%s.jpg' % d]})
+            self.history('me', d, luma=luma)
+        self.w.do_capture({'person': 'me', 'date': '2026-09-12', 'batch': '20260912-101500',
+                           'index': 1, 'image': data_url(), 'settings': {}})
+        self.history('me', '2026-09-12', luma=173.3)
+        with open(self.w.build_chart('me')) as fh:
+            return fh.read()
+
+    def test_script_parses(self):
+        import re
+        import shutil as sh
+        import subprocess
+        import tempfile
+        node = sh.which('node')
+        if not node:
+            self.skipTest('node not available')
+        page = self.build()
+        js = re.search(r'<script>(.*?)</script>', page, re.S).group(1)
+        with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+            fh.write(js)
+            path = fh.name
+        try:
+            r = subprocess.run([node, '--check', path], capture_output=True, text=True)
+        finally:
+            os.unlink(path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_no_raw_newline_inside_a_js_string(self):
+        import re
+        page = self.build()
+        js = re.search(r'<script>(.*?)</script>', page, re.S).group(1)
+        for i, line in enumerate(js.split('\n'), 1):
+            stripped = re.sub(r"'(?:[^'\\]|\\.)*'", '', line)
+            stripped = re.sub(r'"(?:[^"\\]|\\.)*"', '', stripped)
+            self.assertNotIn("'", re.sub(r'//.*$', '', stripped),
+                             'line %d ends inside a string: %s' % (i, line[:80]))
+
+    def test_consumer_copy(self):
+        page = self.build()
+        body = page.split('<body>', 1)[1].split('<script>', 1)[0]
+        self.assertNotIn('\u2014', body, 'no em dashes on the tracker')
+        self.assertNotIn('\u00a7', body, 'no section references on the tracker')
+        for term in ('Fitted slope', 'CI includes zero', 'NOT DETECTED', 'OLS'):
+            self.assertNotIn(term, body.split('<details', 1)[0],
+                             '%r belongs under the details disclosure, not on the page' % term)
+        self.assertIn('Your FaceAge, latest session', page)
+        self.assertIn('Too early to call', page) if 'Two cameras' not in page else None
+        self.assertIn('Shooting it the same way?', page)
+        self.assertIn('The numbers behind this', page)
+
+    def test_brightness_compares_within_camera(self):
+        page = self.build()
+        # the Mac session is the first on its camera: it is the baseline, not a drift
+        self.assertNotIn('2026-09-12<span class="warn-dot"', page)
+        self.assertIn('(baseline)', page)
 
 
 class TestBaselinePerCamera(WebTestCase):

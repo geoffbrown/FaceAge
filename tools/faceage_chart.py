@@ -55,7 +55,7 @@ def num(v):
 
 def load():
     if not os.path.exists(HISTORY):
-        sys.exit("No history yet at %s — run a session first." % HISTORY)
+        sys.exit("No history yet at %s. Run a session first." % HISTORY)
     # A session recorded as a protocol failure (§1) must not be drawn as if it
     # were data. It is listed in the table, struck through, with its reason.
     validity = fa.load_validity(VALIDITY)
@@ -139,17 +139,7 @@ def camera_of(label, image_dir=None):
     return ''
 
 
-def scale(rows, key, lo_key=None, hi_key=None, pad_frac=0.18, band=None):
-    vals = []
-    for r in rows:
-        v = r.get(key)
-        if v is None:
-            continue
-        vals.append(v)
-        if lo_key:
-            vals += [v - r.get(lo_key, 0), v + r.get(hi_key or lo_key, 0)]
-    if band:
-        vals += list(band)
+def scale(vals, pad_frac=0.2):
     if not vals:
         return 0.0, 1.0
     lo, hi = min(vals), max(vals)
@@ -159,120 +149,655 @@ def scale(rows, key, lo_key=None, hi_key=None, pad_frac=0.18, band=None):
     return lo - pad, hi + pad
 
 
-def chart(rows, key, color, se_key=None, band=None, fmt='%.2f', empty_msg='',
-          fit=None, anchors=None):
-    """One time-series panel. Single series, so no legend - the card title names it.
+def camera_baselines(rows):
+    """First logged brightness per camera. Brightness only compares within one
+    camera; a phone number says nothing about how bright the Mac should read."""
+    base = {}
+    for r in rows:
+        cam = r.get('camera') or ''
+        if r.get('luma') is not None and cam not in base:
+            base[cam] = r['luma']
+    return base
 
-    `fit` is the §3 regression: {'fn': dx -> (y, lo, hi), 'x0': day-offset of the
-    first fitted session, 'x1': day-offset of the last}. Drawn as a line with a
-    95% confidence ribbon for the fitted mean.
 
-    `anchors` marks B and R. The x domain is widened to include them, so a retest
-    date months past the last session still appears.
+MARK = {'Mac': 'circle', 'Phone': 'triangle', 'Mac?': 'circle', '': 'circle'}
+SERIES = {'Mac': 'var(--series-1)', 'Phone': 'var(--series-2)',
+          'Mac?': 'var(--series-1)', '': 'var(--series-1)'}
+
+
+def mark(x, y, kind, fill, hollow=False, extra=''):
+    style = ('fill:var(--surface-2);stroke:%s;stroke-width:2' % fill) if hollow \
+        else ('fill:%s' % fill)
+    if kind == 'triangle':
+        return ('<polygon class="dot%s" points="%.1f,%.1f %.1f,%.1f %.1f,%.1f" style="%s"/>'
+                % (extra, x, y - 6.5, x - 6, y + 4.5, x + 6, y + 4.5, style))
+    return '<circle class="dot%s" cx="%.1f" cy="%.1f" r="5.5" style="%s"/>' % (extra, x, y, style)
+
+
+def plot(rows, pre_b, fit, anchors, W=760, H=250):
+    """The one chart: FaceAge per session over time.
+
+    One measure, so one axis. Camera is carried by shape and hue (legend in the
+    card header). Sessions not in the trend (before the baseline anchor) are
+    hollow. The thin bar is +/-1 SE across the session's photos. The dashed
+    line and ribbon are the fitted trend once three sessions exist.
     """
-    pts = [r for r in rows if r.get(key) is not None]
+    PL, PR, PT, PB = 48, 18, 16, 30
+    pts = [r for r in rows if r.get('mean') is not None]
     if not pts:
-        return '<p class="empty">%s</p>' % html.escape(empty_msg)
-
-    fitvals = []
+        return '<p class="empty">No sessions yet.</p>'
+    vals = []
+    for r in pts:
+        vals += [r['mean'] - r['se'], r['mean'] + r['se']]
     if fit:
-        for dx in range(int(fit['x0']), int(fit['x1']) + 1,
-                        max(1, (int(fit['x1']) - int(fit['x0'])) // 60 or 1)):
-            fitvals += list(fit['fn'](dx))
-    ymin, ymax = scale(pts, key, se_key, band=band or (tuple(
-        (min(fitvals), max(fitvals))) if fitvals else None))
+        x0, x1 = int(fit['x0']), int(fit['x1'])
+        vals += [fit['fn'](x0)[0], fit['fn'](x1)[0]]      # the line, not its ribbon
+    ymin, ymax = scale(vals)
+    if ymax - ymin < 4:                      # never let a flat week look dramatic
+        mid = (ymax + ymin) / 2
+        ymin, ymax = mid - 2, mid + 2
+    # whole-number ticks that sit inside the range, so the axis reads 39, 40, 41
+    step = 1 if (ymax - ymin) <= 7 else (2 if (ymax - ymin) <= 14 else 5)
+    ticks = [v for v in range(int(math.floor(ymin)), int(math.ceil(ymax)) + 1) if v % step == 0 and ymin <= v <= ymax]
 
-    d0, d1 = rows[0]['date'], rows[-1]['date']
+    d0, d1 = pts[0]['date'], pts[-1]['date']
     for a in (anchors or {}).values():
-        if a < d0:
-            d0 = a
-        if a > d1:
-            d1 = a
+        d0, d1 = min(d0, a), max(d1, a)
     span = max((d1 - d0).days, 1)
+    pre_labels = {r['label'] for r in pre_b}
 
-    def X(r):
-        return PAD_L + ((r['date'] - d0).days / span) * (W - PAD_L - PAD_R)
+    def X(d):
+        return PL + ((d - d0).days / span) * (W - PL - PR)
 
     def Y(v):
-        return PAD_T + (1 - (v - ymin) / (ymax - ymin)) * (H - PAD_T - PAD_B)
+        return PT + (1 - (v - ymin) / (ymax - ymin)) * (H - PT - PB)
 
-    out = []
-    # target band (exposure only)
-    if band:
-        y_hi, y_lo = Y(band[1]), Y(band[0])
-        out.append('<rect class="band" x="%.1f" y="%.1f" width="%.1f" height="%.1f"/>'
-                   % (PAD_L, y_hi, W - PAD_L - PAD_R, max(y_lo - y_hi, 1)))
-
-    # gridlines + y labels
-    for i in range(4):
-        v = ymin + (ymax - ymin) * i / 3.0
+    out = ['<defs><clipPath id="plotclip"><rect x="%d" y="%d" width="%d" height="%d"/></clipPath></defs>'
+           % (PL, PT, W - PL - PR, H - PT - PB)]
+    for v in ticks:
         y = Y(v)
-        out.append('<line class="grid" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
-                   % (PAD_L, y, W - PAD_R, y))
-        out.append('<text class="ylab" x="%.1f" y="%.1f">%s</text>'
-                   % (PAD_L - 8, y + 3.5, (fmt % v)))
-
-    # x labels: first, last, and a middle one when there is room
+        out.append('<line class="grid" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>' % (PL, y, W - PR, y))
+        out.append('<text class="ylab" x="%.1f" y="%.1f">%d</text>' % (PL - 8, y + 3.5, v))
     idxs = {0, len(pts) - 1}
     if len(pts) > 4:
         idxs.add(len(pts) // 2)
     for i in sorted(idxs):
         r = pts[i]
         out.append('<text class="xlab" x="%.1f" y="%.1f">%s</text>'
-                   % (X(r), H - 9, r['date'].strftime('%d %b')))
+                   % (X(r['date']), H - 9, r['date'].strftime('%-d %b')))
 
-    # §3 fitted slope with its 95% confidence ribbon, under everything else
     if fit:
         x0, x1 = int(fit['x0']), int(fit['x1'])
-        step = max(1, (x1 - x0) // 60 or 1)
+        step = max(1, (x1 - x0) // 40 or 1)
         xs = list(range(x0, x1 + 1, step))
         if xs[-1] != x1:
             xs.append(x1)
-        shift = (rows[0]['date'] - d0).days
+        ref = fit['ref']
         def FX(dx):
-            return PAD_L + ((dx + shift) / span) * (W - PAD_L - PAD_R)
+            return X(ref + datetime.timedelta(days=dx))
         hi = ' '.join('%.1f,%.1f' % (FX(dx), Y(fit['fn'](dx)[2])) for dx in xs)
-        lo = ' '.join('%.1f,%.1f' % (FX(dx), Y(fit['fn'](dx)[1]))
-                      for dx in reversed(xs))
-        out.append('<polygon class="fitband" points="%s %s"/>' % (hi, lo))
+        lo = ' '.join('%.1f,%.1f' % (FX(dx), Y(fit['fn'](dx)[1])) for dx in reversed(xs))
+        out.append('<polygon class="fitband" clip-path="url(#plotclip)" points="%s %s"/>' % (hi, lo))
         out.append('<line class="fit" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
                    % (FX(x0), Y(fit['fn'](x0)[0]), FX(x1), Y(fit['fn'](x1)[0])))
 
-    # B / R study anchors
     for name, adate in sorted((anchors or {}).items()):
-        ax = PAD_L + ((adate - d0).days / span) * (W - PAD_L - PAD_R)
-        out.append('<line class="anchor" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
-                   % (ax, PAD_T, ax, H - PAD_B))
+        ax = X(adate)
+        out.append('<line class="anchor" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>' % (ax, PT, ax, H - PB))
         out.append('<text class="anchorlab" x="%.1f" y="%.1f">%s</text>'
-                   % (ax, PAD_T - 2, html.escape(name)))
-
-    # error band (±1 SE) drawn under the line
-    if se_key and any(r.get(se_key) for r in pts):
-        up = ' '.join('%.1f,%.1f' % (X(r), Y(r[key] + r.get(se_key, 0))) for r in pts)
-        dn = ' '.join('%.1f,%.1f' % (X(r), Y(r[key] - r.get(se_key, 0)))
-                      for r in reversed(pts))
-        out.append('<polygon class="se" points="%s %s"/>' % (up, dn))
+                   % (ax + 5, PT + 9, 'start' if name == 'B' else 'retest'))
 
     if len(pts) > 1:
-        out.append('<polyline class="line" style="stroke:%s" points="%s"/>'
-                   % (color, ' '.join('%.1f,%.1f' % (X(r), Y(r[key])) for r in pts)))
-
+        out.append('<polyline class="line" points="%s"/>'
+                   % ' '.join('%.1f,%.1f' % (X(r['date']), Y(r['mean'])) for r in pts))
     for r in pts:
-        x, y = X(r), Y(r[key])
-        cls = 'dot flagged' if (key == 'mean' and r.get('_suspect')) else 'dot'
-        out.append('<circle class="%s" cx="%.1f" cy="%.1f" r="5" style="fill:%s"/>'
-                   % (cls, x, y, color))
-        tip = '%s — %s' % (r['label'], fmt % r[key])
-        if key == 'mean':
-            tip += ' (n=%d' % r['n']
-            if r['se']:
-                tip += ', ±%.2f SE' % r['se']
-            tip += ')'
-        out.append('<circle class="hit" cx="%.1f" cy="%.1f" r="14" data-tip="%s"/>'
+        x, y = X(r['date']), Y(r['mean'])
+        if r['se']:
+            out.append('<line class="se" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                       % (x, Y(r['mean'] - r['se']), x, Y(r['mean'] + r['se'])))
+        cam = r.get('camera') or ''
+        out.append(mark(x, y, MARK.get(cam, 'circle'), SERIES.get(cam, 'var(--series-1)'),
+                        hollow=r['label'] in pre_labels))
+        tip = '%s: %.1f, %d photos%s' % (r['date'].strftime('%-d %b %Y'), r['mean'], r['n'],
+                                          (', ' + cam) if cam else '')
+        out.append('<circle class="hit" cx="%.1f" cy="%.1f" r="16" data-tip="%s"/>'
                    % (x, y, html.escape(tip, quote=True)))
+    return ('<svg viewBox="0 0 %d %d" role="img" aria-label="FaceAge per session over time">%s</svg>'
+            % (W, H, ''.join(out)))
 
-    return ('<svg viewBox="0 0 %d %d" role="img" aria-label="%s over time">%s</svg>'
-            % (W, H, html.escape(key), ''.join(out)))
+
+def spark(rows, base_by_cam, W=760, H=120):
+    """Small brightness chart for the details section, banded per camera."""
+    PL, PR, PT, PB = 48, 18, 10, 24
+    pts = [r for r in rows if r.get('luma') is not None]
+    if not pts:
+        return '<p class="empty">No brightness data yet.</p>'
+    vals = [r['luma'] for r in pts]
+    for b in base_by_cam.values():
+        vals += [b - LUMA_TOL, b + LUMA_TOL]
+    ymin, ymax = scale(vals)
+    d0, d1 = pts[0]['date'], pts[-1]['date']
+    span = max((d1 - d0).days, 1)
+
+    def X(d):
+        return PL + ((d - d0).days / span) * (W - PL - PR)
+
+    def Y(v):
+        return PT + (1 - (v - ymin) / (ymax - ymin)) * (H - PT - PB)
+
+    out = []
+    for cam, b in base_by_cam.items():
+        out.append('<rect class="band" x="%.1f" y="%.1f" width="%.1f" height="%.1f"/>'
+                   % (PL, Y(b + LUMA_TOL), W - PL - PR, max(Y(b - LUMA_TOL) - Y(b + LUMA_TOL), 1)))
+    for i in range(3):
+        v = ymin + (ymax - ymin) * i / 2.0
+        out.append('<text class="ylab" x="%.1f" y="%.1f">%.0f</text>' % (PL - 8, Y(v) + 3.5, v))
+    for r in pts:
+        x, y = X(r['date']), Y(r['luma'])
+        cam = r.get('camera') or ''
+        out.append(mark(x, y, MARK.get(cam, 'circle'), SERIES.get(cam, 'var(--series-1)')))
+        out.append('<circle class="hit" cx="%.1f" cy="%.1f" r="14" data-tip="%s"/>'
+                   % (x, y, html.escape('%s: brightness %.0f' % (r['label'], r['luma']), quote=True)))
+    out.append('<text class="xlab" x="%.1f" y="%.1f">%s</text>' % (X(d0), H - 6, d0.strftime('%-d %b')))
+    out.append('<text class="xlab" x="%.1f" y="%.1f">%s</text>' % (X(d1), H - 6, d1.strftime('%-d %b')))
+    return '<svg viewBox="0 0 %d %d" role="img" aria-label="brightness per session">%s</svg>' % (W, H, ''.join(out))
+
+
+def status(series, trend, sig, cameras_in_series, anchors):
+    """One headline and one paragraph, in plain words, from the pre-registered
+    numbers. The states are fixed so the page never invents a story."""
+    n = len(series)
+    span = (series[-1]['date'] - series[0]['date']).days if n > 1 else 0
+    wob = ('Numbers move by about %.1f years between sessions with nothing real changing, '
+           % sig['sigma']) if sig.get('sigma') else ''
+    if len(cameras_in_series) > 1:
+        return ('warn', 'Two cameras in the mix',
+                'These sessions come from %s. The camera changes the number before your face does, '
+                'so this line is not one story yet. Keep one camera from here on, and delete or '
+                'set aside the sessions from the other.' % ' and '.join(cameras_in_series))
+    if n < 3 or not trend.get('ok'):
+        return ('neutral', 'Too early to call',
+                'You have %d session%s. A trend needs three, and about a month of them before it '
+                'means much. Keep shooting weekly, the same way each time.' % (n, '' if n == 1 else 's'))
+    if span < 28:
+        return ('neutral', 'Early days',
+                '%d sessions over %d days. %sso read the trend after a month or more, '
+                'not from one week to the next.' % (n, span, wob or 'Week to week is mostly noise, '))
+    per = trend['slope_per_month']
+    if trend['detected'] and per < 0:
+        return ('good', 'Trending younger',
+                'About %.1f years per month over %d days, and the change is bigger than the '
+                'wobble. Keep doing exactly what you are doing.' % (abs(per), span))
+    if trend['detected'] and per > 0:
+        return ('warn', 'Trending older',
+                'About %.1f years per month over %d days. Before reading anything into it, check '
+                'that the light, camera and framing have stayed the same. Those move the number '
+                'more than real change does.' % (per, span))
+    return ('neutral', 'Holding steady',
+            'Across %d sessions and %d days the line is flat within the normal wobble. '
+            'No change yet, in either direction.' % (n, span))
+
+
+HELP = {
+    'mean': 'The average FaceAge across the photos in this session. This is the number the tracker follows.',
+    'median': 'The middle photo of the session. Less swayed by one odd photo than the average.',
+    'n': 'Photos that went into the number. Ten is the target; fewer means a noisier session.',
+    'sd': 'How much the photos in this session disagreed with each other. Under about 1.5 is normal.',
+    'exposure': 'Brightness on your face, 0 to 255. Keep it within 5 of your first session on this camera. Lighting alone can move FaceAge by years.',
+    'flagged': 'Photos the analysis had a doubt about: face too small in the frame, low confidence, or clipped at an edge.',
+    'time': 'When the analysis ran, in local time.',
+    'camera': 'Which camera took the photos. Only sessions from the same camera can be compared.',
+}
+
+
+def hlp(key, label=None):
+    return '<span class="help" data-help="%s">%s</span>' % (html.escape(HELP[key], quote=True),
+                                                             html.escape(label or key.upper()))
+
+
+def main():
+    rows, excluded = load()
+    anchors = fa.load_anchors(ANCHORS)
+    series, pre_b = fa.series_for_trend(rows, anchors)
+    trend = fa.trend(series)
+    sig = fa.sigma(series) if len(series) >= 2 else {}
+    cams_in_series = {r.get('camera') for r in series if r.get('camera')}
+    fit = make_fit(series, series[0]['date']) if (len(series) >= 3 and len(cams_in_series) <= 1) else None
+    if fit:
+        fit['ref'] = series[0]['date']
+    latest = rows[-1]
+    base_by_cam = camera_baselines(rows)
+    for r in rows + excluded:
+        b = base_by_cam.get(r.get('camera') or '')
+        r['_base'] = b
+        r['_suspect'] = (b is not None and r.get('luma') is not None
+                         and abs(r['luma'] - b) > LUMA_TOL)
+    cams_series = sorted({r['camera'] for r in series if r.get('camera')})
+    cams_all = sorted({r['camera'] for r in rows + excluded if r.get('camera')})
+    tone, head, para = status(series, trend, sig, cams_series, anchors)
+
+    # ---- hero ----
+    cam_word = {'Mac': 'this Mac’s camera', 'Phone': 'phone photos'}.get(latest.get('camera') or '', '')
+    hero_sub = '%s%s · %d photos' % (latest['date'].strftime('%-d %b %Y'),
+                                          (' · ' + cam_word) if cam_word else '', latest['n'])
+    hero = ('<section class="card hero"><div class="hero-l"><div class="eyebrow">Your FaceAge, latest session</div>'
+            '<div class="hero-num">%.1f</div><div class="hero-sub">%s</div></div>'
+            '<div class="hero-r"><div class="status %s"><div class="status-h">%s</div><p>%s</p></div></div></section>'
+            % (latest['mean'], html.escape(hero_sub), tone, html.escape(head), html.escape(para)))
+
+    # ---- chart ----
+    legend = ''
+    if len(cams_all) > 1 or pre_b:
+        items = []
+        for c in cams_all:
+            items.append('<span class="lg"><i class="sw %s" style="--c:%s"></i>%s</span>'
+                         % (MARK.get(c, 'circle'), SERIES.get(c, 'var(--series-1)'), html.escape(c)))
+        if pre_b:
+            items.append('<span class="lg"><i class="sw circle hollow"></i>before the start line, not in the trend</span>')
+        legend = '<div class="legend">%s</div>' % ''.join(items)
+    caption = ('Each point is one session: the average of its photos, with a thin bar for how much '
+               'those photos disagreed. ')
+    if fit:
+        caption += 'The dashed line is the trend, with the grey ribbon showing how sure it is.'
+    elif len(cams_series) > 1:
+        caption += 'No trend line while two cameras are mixed.'
+    else:
+        caption += 'A trend line appears once there are three sessions.'
+    chart_card = ('<section class="card"><div class="card-h"><h2>Over time</h2>%s</div>%s'
+                  '<p class="caption">%s</p></section>' % (legend, plot(rows, pre_b, fit, anchors), caption))
+
+    # ---- consistency ----
+    chips = []
+    for r in rows:
+        light = ('ok' if r['_base'] is None or not r['_suspect'] else 'bad') if r.get('luma') is not None else 'na'
+        light_txt = {'ok': 'light matched', 'bad': 'light off by %.0f' % (abs(r['luma'] - r['_base']) if r['_base'] is not None else 0),
+                     'na': 'light unknown'}[light]
+        if r['_base'] is not None and r['luma'] is not None and abs(r['luma'] - r['_base']) < 0.05:
+            light_txt = 'sets the light baseline'
+        frames = 'ok' if r['flagged'] == 0 else 'bad'
+        frames_txt = 'all photos clean' if r['flagged'] == 0 else '%d photo%s flagged' % (r['flagged'], '' if r['flagged'] == 1 else 's')
+        chips.append('<div class="chip"><div class="chip-d">%s <span class="chip-c">%s</span></div>'
+                     '<div class="chip-k %s">%s %s</div><div class="chip-k %s">%s %s</div></div>'
+                     % (r['date'].strftime('%-d %b'), html.escape(r.get('camera') or ''),
+                        light, '✓' if light == 'ok' else '!', html.escape(light_txt),
+                        frames, '✓' if frames == 'ok' else '!', html.escape(frames_txt)))
+    good_n = sum(1 for r in rows if not r['_suspect'] and r['flagged'] == 0)
+    cons = ('<section class="card"><div class="card-h"><h2>Shooting it the same way?</h2>'
+            '<span class="muted">%d of %d sessions clean</span></div>'
+            '<p class="sub">The model reacts to light and framing as much as to your face. '
+            'A session counts as clean when its brightness matched your first session on that camera '
+            'and every photo passed.</p><div class="chips">%s</div></section>'
+            % (good_n, len(rows), ''.join(chips)))
+
+    # ---- sessions table ----
+    def row_html(r, exc=False):
+        lab = html.escape(r['label'], quote=True)
+        cam = html.escape(r.get('camera') or '')
+        if exc:
+            main_cells = ('<td class="d">%s<span class="tagx">set aside</span></td><td>%s</td><td>%s</td>'
+                          '<td class="r">%.2f</td><td class="r">%s</td><td class="r">%d</td>'
+                          % (html.escape(r['label']), cam, html.escape(r['run_time']), r['mean'],
+                             ('%.2f' % r['median']) if r['median'] is not None else '–', r['n']))
+        else:
+            main_cells = ('<td class="d">%s%s</td><td>%s</td><td>%s</td><td class="r">%.2f</td>'
+                          '<td class="r">%s</td><td class="r">%d</td>'
+                          % (html.escape(r['label']), '<span class="warn-dot" title="brightness off from this camera’s baseline">!</span>' if r['_suspect'] else '',
+                             cam, html.escape(r['run_time']), r['mean'],
+                             ('%.2f' % r['median']) if r['median'] is not None else '–', r['n']))
+        exp = ('%.0f' % r['luma']) if r['luma'] is not None else '–'
+        if r['luma'] is not None and r['_base'] is not None:
+            dlt = r['luma'] - r['_base']
+            exp += ' <span class="muted">(%s%.0f vs baseline)</span>' % ('+' if dlt > 0 else '', dlt) if abs(dlt) >= 0.5 else ' <span class="muted">(baseline)</span>'
+        sd = ('%.2f' % r['std']) if r['std'] else '–'
+        detail = ('<tr class="detail" data-for="%s"><td colspan="8"><div class="dgrid">'
+                  '<div><div class="dk">%s</div><div class="dv">%s</div></div>'
+                  '<div><div class="dk">%s</div><div class="dv">%s</div></div>'
+                  '<div><div class="dk">%s</div><div class="dv">%d</div></div>'
+                  '%s'
+                  '<div class="dnote"><div class="dk">NOTES</div><div class="note" contenteditable data-session="%s">%s</div></div>'
+                  '</div></td></tr>'
+                  % (lab, hlp('sd', 'Spread'), sd, hlp('exposure', 'Brightness'), exp,
+                     hlp('flagged', 'Flagged photos'), r['flagged'],
+                     ('<div><div class="dk">WHY SET ASIDE</div><div class="dv">%s</div></div>' % html.escape(r.get('reason') or '')) if exc else '',
+                     lab, html.escape(r['notes'])))
+        return ('<tr class="row%s" data-session="%s"><td class="sel"><input type="checkbox" class="pick" value="%s" aria-label="select %s"></td>'
+                '%s<td class="act"><button class="btn sm fo" data-session="%s">Open folder</button>'
+                '<button class="btn sm del" data-session="%s">Delete</button>'
+                '<button class="btn sm more" aria-label="details">›</button></td></tr>%s'
+                % (' exc' if exc else '', lab, lab, lab, main_cells, lab, lab, detail))
+    trows = ''.join(row_html(r) for r in reversed(rows)) + ''.join(row_html(r, True) for r in reversed(excluded))
+    table = ('<section class="card sessions" id="sessions"><div class="card-h"><h2>Sessions</h2>'
+             '<button class="btn" id="edit">Edit</button></div>'
+             '<div class="editbar" id="editbar" hidden><label class="sel-all"><input type="checkbox" id="pickall"> select all</label>'
+             '<span id="selcount" class="muted">0 selected</span><span class="sp"></span>'
+             '<button class="btn danger" id="delsel" disabled>Delete selected</button><button class="btn" id="editdone">Done</button></div>'
+             '<div class="tablewrap"><table><thead><tr><th class="sel"></th><th>Session</th><th>%s</th><th>%s</th>'
+             '<th class="r">%s</th><th class="r">%s</th><th class="r">%s</th><th></th></tr></thead>'
+             '<tbody>%s</tbody></table></div>'
+             '<p class="caption">Click a row for its spread, brightness, flagged photos and notes. '
+             'Hover a column name for what it means.</p></section>'
+             % (hlp('camera', 'Camera'), hlp('time', 'Time'), hlp('mean', 'Mean'), hlp('median', 'Median'), hlp('n', 'Photos'), trows))
+
+    # ---- the numbers behind this ----
+    sci = []
+    if trend.get('ok'):
+        lo, hi = trend['slope_ci']
+        sci.append('Fitted trend: %+.2f years per month, 95%% confidence %+.2f to %+.2f, over %d days and %d sessions. '
+                   'The pre-registered call is "%s": a change counts only when that range excludes zero.'
+                   % (trend['slope_per_month'], lo, hi, trend['window_days'], trend['n'], trend['verdict']))
+    else:
+        sci.append('No fitted trend yet: it needs at least three sessions in the series.')
+    if sig.get('sigma'):
+        sci.append('Session to session wobble (standard deviation of session means): %.2f years across %d sessions.'
+                   % (sig['sigma'], sig['n']))
+    if not anchors.get('B'):
+        sci.append('No start line is set, so every session including rehearsals is in the trend. '
+                   'Set it with: faceage anchor B YYYY-MM-DD')
+    elif pre_b:
+        sci.append('%d rehearsal session(s) before the start line are shown hollow and left out of the trend.' % len(pre_b))
+    if excluded:
+        sci.append('%d session(s) set aside as protocol failures and kept out of every number here: %s.'
+                   % (len(excluded), '; '.join('%s (%s)' % (r['label'], r.get('reason') or 'no reason') for r in excluded)))
+    if len(cams_all) > 1:
+        sci.append('Sessions were shot on more than one camera (%s). Numbers from different cameras are not comparable.'
+                   % ', '.join('%s: %s' % (c, ', '.join(r['label'] for r in rows + excluded if r.get('camera') == c)) for c in cams_all))
+    sci.append('Pairwise session to session differences are never interpreted; only the fitted trend is. '
+               'Real change over one week is close to zero, so week to week movement is noise.')
+    details = ('<details class="card nerd"><summary>The numbers behind this</summary>'
+               '<h3>Brightness per session</h3><p class="sub">Green band: within 5 of the first session on that camera.</p>%s'
+               '<ul class="sci">%s</ul></details>'
+               % (spark(rows, base_by_cam), ''.join('<li>%s</li>' % html.escape(t) for t in sci)))
+
+    page = PAGE.replace('__GEN__', datetime.datetime.now().strftime('%-d %b %Y, %H:%M'))
+    page = (page.replace('__HERO__', hero).replace('__CHART__', chart_card)
+                .replace('__CONS__', cons).replace('__TABLE__', table)
+                .replace('__DETAILS__', details).replace('__SUBJ__', html.escape(SUBJECT)))
+    with open(OUT, 'w') as fh:
+        fh.write(page)
+    print(OUT)
+
+
+# Raw string: no Python escapes can reach the JavaScript, so a \n written here
+# is two characters on the page and never a newline inside a JS literal.
+PAGE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FaceAge tracker: __SUBJ__</title>
+<style>
+:root{color-scheme:light dark}
+.viz-root{
+  --surface-1:#f7f6f2; --surface-2:#ffffff; --border:#e6e4de;
+  --text-primary:#111110; --text-secondary:#52514e; --text-muted:#7c7a73;
+  --series-1:#2a78d6; --series-2:#eb6834; --grid:#edebe6;
+  --band:rgba(12,163,12,.10); --good:#0ca30c; --good-bg:#e9f6e9; --warn:#b47600; --warn-bg:#fff4d6;
+  --crit:#d03b3b; --crit-bg:#fdecec; --accent:#2a78d6; --accent-ink:#fff;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px -18px rgba(0,0,0,.18);
+}
+@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])) .viz-root{
+  --surface-1:#161615; --surface-2:#1f1f1e; --border:#33322f;
+  --text-primary:#fff; --text-secondary:#c3c2b7; --text-muted:#8e8c83;
+  --series-1:#3987e5; --series-2:#d95926; --grid:#2b2a28;
+  --band:rgba(12,163,12,.16); --good:#4fc26a; --good-bg:#173321; --warn:#e6b64a; --warn-bg:#3a2f12;
+  --crit:#f06767; --crit-bg:#3b1c1c; --accent:#4c8df5; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
+}}
+:root[data-theme="dark"] .viz-root{
+  --surface-1:#161615; --surface-2:#1f1f1e; --border:#33322f;
+  --text-primary:#fff; --text-secondary:#c3c2b7; --text-muted:#8e8c83;
+  --series-1:#3987e5; --series-2:#d95926; --grid:#2b2a28;
+  --band:rgba(12,163,12,.16); --good:#4fc26a; --good-bg:#173321; --warn:#e6b64a; --warn-bg:#3a2f12;
+  --crit:#f06767; --crit-bg:#3b1c1c; --accent:#4c8df5; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface-1);
+  font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.viz-root{background:var(--surface-1);color:var(--text-primary);max-width:860px;margin:0 auto;padding:28px 20px 64px}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+h1{font-size:22px;margin:0;letter-spacing:-.015em}
+.subj{padding:3px 10px;border-radius:99px;background:var(--surface-2);border:1px solid var(--border);font-size:12.5px;font-weight:600;color:var(--text-secondary)}
+.sp{flex:1}
+.gen{font-size:12px;color:var(--text-muted)}
+.card{background:var(--surface-2);border:1px solid var(--border);border-radius:16px;padding:20px 22px;margin-bottom:14px;box-shadow:var(--shadow)}
+.card-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.card h2{font-size:15px;margin:0;font-weight:700}
+.card h3{font-size:13px;margin:16px 0 4px;color:var(--text-secondary)}
+.sub,.caption{font-size:13px;color:var(--text-secondary);margin:4px 0 12px;line-height:1.5}
+.caption{margin:10px 0 0}
+.muted{color:var(--text-muted);font-size:12.5px}
+
+/* hero */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:24px;align-items:center;padding:26px 26px}
+.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);font-weight:600}
+.hero-num{font-size:76px;font-weight:700;letter-spacing:-.035em;line-height:1;margin:6px 0 8px}
+.hero-sub{font-size:13.5px;color:var(--text-secondary)}
+.status{padding:16px 18px;border-radius:14px;background:var(--surface-1);border:1px solid var(--border)}
+.status.good{background:var(--good-bg);border-color:transparent}
+.status.warn{background:var(--warn-bg);border-color:transparent}
+.status-h{font-size:17px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.status-h::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--text-muted)}
+.status.good .status-h::before{background:var(--good)}
+.status.warn .status-h::before{background:var(--warn)}
+.status p{margin:0;font-size:14px;color:var(--text-secondary);line-height:1.5}
+@media (max-width:640px){.hero{grid-template-columns:1fr}.hero-num{font-size:60px}}
+
+/* chart */
+svg{width:100%;height:auto;display:block;overflow:visible}
+.grid{stroke:var(--grid);stroke-width:1}
+.line{fill:none;stroke:var(--series-1);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.se{stroke:var(--series-1);stroke-width:1.5;opacity:.45}
+.fitband{fill:var(--text-secondary);opacity:.10}
+.fit{stroke:var(--text-primary);stroke-width:1.6;stroke-dasharray:5 4;opacity:.7}
+.anchor{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3}
+.anchorlab{fill:var(--text-muted);font-size:10px;font-weight:700;text-anchor:start;text-transform:uppercase;letter-spacing:.06em}
+.dot{stroke:var(--surface-2);stroke-width:2}
+.hit{fill:transparent;cursor:pointer}
+.band{fill:var(--band)}
+.ylab{fill:var(--text-muted);font-size:10.5px;text-anchor:end;font-variant-numeric:tabular-nums}
+.xlab{fill:var(--text-muted);font-size:10.5px;text-anchor:middle}
+.empty{color:var(--text-secondary);font-size:13px;padding:0 4px 12px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--text-secondary);margin-left:auto}
+.lg{display:inline-flex;align-items:center;gap:6px}
+.sw{display:inline-block;width:10px;height:10px;background:var(--c,var(--series-1));border-radius:50%}
+.sw.triangle{border-radius:0;clip-path:polygon(50% 0,0 100%,100% 100%)}
+.sw.hollow{background:transparent;border:2px solid var(--series-1)}
+@media (prefers-reduced-motion:no-preference){
+  .line{stroke-dasharray:2000;stroke-dashoffset:2000;animation:draw 1.2s ease-out forwards}
+  .dot,.se{opacity:0;animation:pop .4s ease-out .6s forwards}
+  .se{animation-name:popse}
+  .card{animation:rise .5s ease-out both}
+  .card:nth-child(2){animation-delay:.05s}.card:nth-child(3){animation-delay:.1s}.card:nth-child(4){animation-delay:.15s}
+}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes pop{to{opacity:1}}
+@keyframes popse{to{opacity:.45}}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* consistency chips */
+.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+.chip{padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1);font-size:12.5px}
+.chip-d{font-weight:700;margin-bottom:4px}
+.chip-c{font-weight:500;color:var(--text-muted);margin-left:4px}
+.chip-k{color:var(--text-secondary)}
+.chip-k.ok{color:var(--good)} .chip-k.bad{color:var(--warn)}
+
+/* buttons */
+.btn{font:inherit;font-size:13px;font-weight:600;padding:8px 12px;border-radius:9px;border:1px solid var(--border);
+  background:var(--surface-2);color:var(--text-primary);cursor:pointer}
+.btn:hover:not(:disabled){background:var(--surface-1)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sm{padding:6px 9px;font-size:12.5px}
+.btn.danger{color:var(--crit)}
+.btn.danger:hover:not(:disabled){background:var(--crit-bg)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+
+/* sessions */
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);font-weight:600}
+td.r,th.r{text-align:right}
+td.d{font-weight:600;white-space:nowrap}
+tr.row{cursor:pointer}
+tr.row:hover td{background:var(--surface-1)}
+tr.row.open td{border-bottom-color:transparent}
+tr.detail{display:none}
+tr.detail.show{display:table-row}
+tr.detail td{background:var(--surface-1);padding:8px 12px 14px}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px 18px}
+.dnote{grid-column:1/-1}
+.dk{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);font-weight:600}
+.dv{font-size:14px}
+.note{min-height:22px;padding:4px 0;color:var(--text-secondary);cursor:text}
+.note:empty::before{content:'add a note';color:var(--text-muted);font-style:italic}
+.note:focus{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+td.act{white-space:nowrap;text-align:right}
+td.act .btn{margin-left:4px}
+.more{transition:transform .2s}
+tr.open .more{transform:rotate(90deg)}
+tr.exc td.d{color:var(--text-muted);text-decoration:line-through}
+.tagx{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:6px;font-size:10.5px;font-weight:600;text-decoration:none;
+  background:var(--warn-bg);color:var(--warn);text-transform:uppercase;letter-spacing:.04em}
+.warn-dot{display:inline-block;margin-left:6px;width:16px;height:16px;border-radius:50%;background:var(--warn-bg);color:var(--warn);
+  font-size:11px;font-weight:700;text-align:center;line-height:16px}
+.sel{width:28px}
+.sessions:not(.editing) .sel{display:none}
+.sessions.editing td.act .del,.sessions.editing td.act .fo{display:none}
+.editbar{display:flex;gap:12px;align-items:center;margin:8px 0 10px;padding:10px 12px;border-radius:10px;background:var(--surface-1)}
+.editbar[hidden]{display:none}
+.sel-all{display:flex;gap:6px;align-items:center;font-size:13px}
+.help{border-bottom:1px dotted var(--text-muted);cursor:help}
+#tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;max-width:280px;
+  background:var(--text-primary);color:var(--surface-1);padding:7px 10px;border-radius:8px;font-size:12.5px;line-height:1.4;z-index:9}
+#save-bar{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--accent);color:#fff;text-align:center;
+  padding:10px;font-size:13px;font-weight:600;cursor:pointer;z-index:10}
+details.nerd summary{cursor:pointer;font-weight:600;color:var(--text-secondary);font-size:14px}
+ul.sci{margin:12px 0 0;padding-left:18px;color:var(--text-secondary);font-size:13px}
+ul.sci li{margin-bottom:7px}
+</style></head>
+<body><div class="viz-root">
+<header class="top"><h1>FaceAge</h1><span class="subj">__SUBJ__</span><span class="sp"></span>
+  <span class="gen">Updated __GEN__</span><button class="btn sm" id="open-results">Open data folder</button></header>
+__HERO__
+__CHART__
+__CONS__
+__TABLE__
+__DETAILS__
+<p class="muted" style="text-align:center;margin-top:20px">Everything on this page stays on this Mac. Summary numbers only, no photographs.</p>
+</div>
+<div id="tip"></div>
+<div id="save-bar">Save notes</div>
+<script>
+'use strict';
+var SUBJ = '__SUBJ__';
+var served = (location.protocol === 'http:' || location.protocol === 'https:');
+var tip = document.getElementById('tip');
+function showTip(text, x, y){ tip.textContent = text; tip.style.opacity = '1'; moveTip(x, y); }
+function moveTip(x, y){ tip.style.left = Math.min(x + 14, window.innerWidth - 300) + 'px'; tip.style.top = (y - 36) + 'px'; }
+function hideTip(){ tip.style.opacity = '0'; }
+function bindTips(sel, attr){
+  document.querySelectorAll(sel).forEach(function(el){
+    el.addEventListener('mouseenter', function(e){ showTip(el.getAttribute(attr), e.clientX, e.clientY); });
+    el.addEventListener('mousemove', function(e){ moveTip(e.clientX, e.clientY); });
+    el.addEventListener('mouseleave', hideTip);
+  });
+}
+bindTips('.hit', 'data-tip');
+bindTips('.help', 'data-help');
+
+function post(path, body){
+  return fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(function(r){ return r.json().then(function(j){ if(!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); });
+}
+function needServer(){ alert('Open the tracker from the FaceAge app (faceage app) to use this.'); }
+
+/* rows expand and collapse; buttons inside do not toggle */
+document.querySelectorAll('tr.row').forEach(function(tr){
+  tr.addEventListener('click', function(e){
+    if(e.target.closest('button') || e.target.closest('input') || e.target.closest('.note')) return;
+    toggle(tr);
+  });
+  tr.querySelector('.more').addEventListener('click', function(){ toggle(tr); });
+});
+function toggle(tr){
+  var d = document.querySelector('tr.detail[data-for="' + tr.getAttribute('data-session') + '"]');
+  tr.classList.toggle('open');
+  if(d) d.classList.toggle('show');
+}
+
+/* open the folder */
+document.querySelectorAll('button.fo').forEach(function(b){
+  b.addEventListener('click', function(){
+    if(!served) return needServer();
+    post('/api/reveal', {person:SUBJ, date:b.getAttribute('data-session'), what:'session'})
+      .catch(function(e){ alert('Could not open: ' + e.message); });
+  });
+});
+document.getElementById('open-results').addEventListener('click', function(){
+  if(!served) return needServer();
+  post('/api/reveal', {person:SUBJ, what:'results'}).catch(function(e){ alert('Could not open: ' + e.message); });
+});
+
+/* delete: one, or the selection */
+function del(dates){
+  if(!served) return needServer();
+  var list = dates.join(', ');
+  var msg = (dates.length === 1 ? 'Delete session ' + list + '?' : 'Delete ' + dates.length + ' sessions (' + list + ')?') +
+            ' This removes them from the tracker and deletes their photos and results from this Mac. It cannot be undone.';
+  if(!confirm(msg)) return;
+  post('/api/delete', {person:SUBJ, dates:dates})
+    .then(function(){ location.reload(); })
+    .catch(function(e){ alert('Could not delete: ' + e.message); });
+}
+document.querySelectorAll('button.del').forEach(function(b){
+  b.addEventListener('click', function(){ del([b.getAttribute('data-session')]); });
+});
+
+/* edit mode: pick several, delete together */
+var sessions = document.getElementById('sessions'), editbar = document.getElementById('editbar');
+function picked(){ return Array.prototype.slice.call(document.querySelectorAll('.pick:checked')).map(function(c){ return c.value; }); }
+function refreshSel(){
+  var n = picked().length;
+  document.getElementById('selcount').textContent = n + ' selected';
+  document.getElementById('delsel').disabled = n === 0;
+}
+document.getElementById('edit').addEventListener('click', function(){ sessions.classList.add('editing'); editbar.hidden = false; refreshSel(); });
+document.getElementById('editdone').addEventListener('click', function(){
+  sessions.classList.remove('editing'); editbar.hidden = true;
+  document.querySelectorAll('.pick').forEach(function(c){ c.checked = false; });
+  document.getElementById('pickall').checked = false;
+});
+document.getElementById('pickall').addEventListener('change', function(e){
+  document.querySelectorAll('.pick').forEach(function(c){ c.checked = e.target.checked; }); refreshSel();
+});
+document.querySelectorAll('.pick').forEach(function(c){ c.addEventListener('change', refreshSel); });
+document.getElementById('delsel').addEventListener('click', function(){ var d = picked(); if(d.length) del(d); });
+
+/* notes: saved through the app when served, downloaded as a sidecar when opened as a file */
+var bar = document.getElementById('save-bar');
+function gatherNotes(){
+  var m = {};
+  document.querySelectorAll('.note').forEach(function(td){ m[td.getAttribute('data-session')] = td.textContent.trim(); });
+  return m;
+}
+document.querySelectorAll('.note').forEach(function(td){
+  td.addEventListener('input', function(){ bar.style.display = 'block'; });
+  td.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); td.blur(); } });
+});
+function done(msg, ms){ bar.textContent = msg; setTimeout(function(){ bar.style.display = 'none'; bar.textContent = 'Save notes'; }, ms); }
+bar.addEventListener('click', function(){
+  var notes = gatherNotes();
+  if(served){
+    bar.textContent = 'Saving';
+    post('/api/notes', {person:SUBJ, notes:notes}).then(function(){ done('Saved', 1400); })
+      .catch(function(e){ done('Could not save: ' + e.message, 5000); });
+    return;
+  }
+  var blob = new Blob([JSON.stringify(notes, null, 2)], {type:'application/json'});
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'session_notes.json'; a.click(); URL.revokeObjectURL(a.href);
+  done('Saved. Drop session_notes.json next to tracker.html, then regenerate', 3500);
+});
+</script>
+</body></html>"""
 
 
 def make_fit(series, ref_date):
@@ -298,343 +823,6 @@ def make_fit(series, ref_date):
         return (yhat, yhat - half, yhat + half)
 
     return {'fn': fn, 'x0': min(xs), 'x1': max(xs), 'ols': f, 't': t}
-
-
-def main():
-    rows, excluded = load()
-    anchors = fa.load_anchors(ANCHORS)
-    series, pre_b = fa.series_for_trend(rows, anchors)
-    trend = fa.trend(series)
-    fit = make_fit(series, rows[0]['date'])
-    base, last = rows[0], rows[-1]
-    delta = last['mean'] - base['mean']
-    luma_base = base.get('luma')
-
-    for r in rows:
-        r['_suspect'] = (luma_base is not None and r.get('luma') is not None
-                         and abs(r['luma'] - luma_base) > LUMA_TOL)
-
-    band = (luma_base - LUMA_TOL, luma_base + LUMA_TOL) if luma_base is not None else None
-    suspect = [r for r in rows if r['_suspect']]
-
-    tiles = [
-        ('Latest in series', '%.2f' % last['mean'], last['label'], ''),
-        # §3: pairwise deltas are not interpreted, only the fitted trend. The
-        # tile therefore reports the fitted slope and its verdict, not the
-        # last-minus-first difference, which is the number most likely to be
-        # over-read.
-        ('Fitted slope (§3)',
-         ('%+.2f' % trend['slope_per_month']) if trend.get('ok') else '—',
-         ('yr/month, 95%% CI %+.2f to %+.2f' % trend['slope_ci']
-          if trend.get('ok') else 'needs 3+ sessions in the series'),
-         ('' if not trend.get('ok') or not trend['detected']
-          else ('up' if trend['slope_per_month'] > 0 else 'down'))),
-        # "logged" and "in the series" are different counts, and conflating
-        # them hid excluded sessions entirely.
-        ('Sessions in series', str(len(rows)),
-         ('%d photo%s' % (sum(r['n'] for r in rows),
-                          '' if sum(r['n'] for r in rows) == 1 else 's'))
-         + (' \u00b7 %d excluded' % len(excluded) if excluded else ''), ''),
-        ('Result (§3)',
-         (trend['verdict'].upper() if trend.get('ok') else 'NOT YET'),
-         ('CI excludes zero' if trend.get('ok') and trend['detected']
-          else ('CI includes zero' if trend.get('ok')
-                else 'not enough sessions')),
-         ''),
-    ]
-    tile_html = ''.join(
-        '<div class="tile"><div class="tl">%s</div><div class="tv %s">%s</div>'
-        '<div class="ts">%s</div></div>' % (html.escape(t), cls, html.escape(v), html.escape(s))
-        for t, v, s, cls in tiles)
-
-    notes = []
-    trows = ''.join(
-        '<tr%s><td>%s</td><td>%s</td><td class="r">%s</td><td class="r">%.2f</td><td class="r">%s</td>'
-        '<td class="r">%d</td><td class="r">%s</td><td class="r">%s</td>'
-        '<td class="r">%s</td><td class="note" contenteditable data-session="%s">%s</td>'
-        '<td class="rm"><button class="rm fo" data-session="%s" title="Show this session\'s photos in Finder">folder</button> '
-        '<button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
-        % (' class="sus"' if r['_suspect'] else '', html.escape(r['label']),
-           html.escape(r.get('camera') or ''),
-           html.escape(r['run_time']), r['mean'],
-           ('%.2f' % r['median']) if r['median'] is not None else '—', r['n'],
-           ('%.2f' % r['std']) if r['std'] else '—',
-           ('%.1f' % r['luma']) if r['luma'] is not None else '—',
-           ('%d' % r['flagged']) if r['flagged'] else '0',
-           html.escape(r['label'], quote=True), html.escape(r['notes']),
-           html.escape(r['label'], quote=True), html.escape(r['label'], quote=True))
-        for r in rows)
-    # Same eleven columns as the rows above, or the table misaligns.
-    trows += ''.join(
-        '<tr class="exc"><td>%s</td><td>%s</td><td class="r">%s</td><td class="r">%.2f</td>'
-        '<td class="r">—</td><td class="r">%d</td><td class="r">—</td>'
-        '<td class="r">%s</td><td class="r" title="%s">excluded</td>'
-        '<td class="note" contenteditable data-session="%s">%s</td>'
-        '<td class="rm"><button class="rm fo" data-session="%s" title="Show this session\'s photos in Finder">folder</button> '
-        '<button class="rm" data-session="%s" title="Remove this session from the tracker">remove</button></td></tr>'
-        % (html.escape(r['label']), html.escape(r.get('camera') or ''),
-           html.escape(r['run_time']), r['mean'], r['n'],
-           ('%.1f' % r['luma']) if r['luma'] is not None else '—',
-           html.escape(r.get('reason') or '', quote=True),
-           html.escape(r['label'], quote=True), html.escape(r['notes']),
-           html.escape(r['label'], quote=True), html.escape(r['label'], quote=True))
-        for r in excluded)
-
-    cameras = sorted({r['camera'] for r in rows + excluded if r.get('camera')})
-    if len(cameras) > 1:
-        notes.append('Sessions were shot on more than one camera (%s). Numbers from '
-                     'different cameras are not comparable: a Mac session and a phone '
-                     'session differ by the camera before they differ by the face. '
-                     'Keep one camera for the series.'
-                     % ', '.join('%s: %s' % (c, ', '.join(r['label'] for r in rows + excluded
-                                                            if r.get('camera') == c))
-                                 for c in cameras))
-
-    if excluded:
-        notes.append('%d session(s) recorded as protocol failures and excluded '
-                     'from every statistic on this page (§1): %s. They are shown '
-                     'struck through for completeness.'
-                     % (len(excluded),
-                        '; '.join('%s — %s' % (r['label'], r.get('reason') or 'no reason')
-                                  for r in excluded)))
-    if trend.get('ok') and not trend['detected']:
-        notes.append('The fitted slope\u2019s confidence interval includes zero, so the '
-                     'result is "not detected". Not trending, not early signs. '
-                     'Pairwise session-to-session deltas are not interpreted (§3).')
-    if not anchors.get('B'):
-        notes.append('B (baseline) is not set, so every session including rehearsal '
-                     'ones is in the fit. Set it with `faceage anchor B YYYY-MM-DD`.')
-    elif pre_b:
-        notes.append('%d rehearsal session(s) before B are plotted but excluded from '
-                     'the fit (§4).' % len(pre_b))
-    if len(rows) < 2:
-        notes.append('Only one session so far. A trend needs several; treat this as the '
-                     'baseline, not a result.')
-    if suspect:
-        notes.append('Exposure drifted more than %.0f from baseline in %d session(s): %s. '
-                     'Lighting alone moves FaceAge by up to ~3.7 years, so treat those '
-                     'changes as photographic until reshot.'
-                     % (LUMA_TOL, len(suspect), ', '.join(r['label'] for r in suspect)))
-    if any(r['failed'] for r in rows):
-        notes.append('Some sessions had photos that failed face detection — see the '
-                     'per-image CSVs.')
-    notes.append('Weekly cadence note: real biological change over one week is ~0. '
-                 'Week-to-week differences are mostly measurement noise; read the trend '
-                 'across a month or more, not consecutive points.')
-    note_html = ''.join('<li>%s</li>' % html.escape(n) for n in notes)
-
-    if not fit:
-        fitnote = 'No fit yet — the series needs at least three sessions.'
-    else:
-        lo, hi = trend['slope_ci']
-        fitnote = ('Fit: %+.3f yr/month (95%% CI %+.3f to %+.3f) over %d days, n=%d.'
-                   % (trend['slope_per_month'], lo, hi,
-                      trend['window_days'], trend['n']))
-
-    page = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FaceAge tracker — __SUBJ__</title>
-<style>
-:root{color-scheme:light dark}
-.viz-root{
-  --surface-1:#fcfcfb; --surface-2:#ffffff; --border:#e5e4e0;
-  --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#78766f;
-  --series-1:#2a78d6; --series-2:#eb6834; --grid:#eceae5;
-  --band:rgba(12,163,12,.10); --warn:#fab219; --crit:#d03b3b;
-}
-@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])) .viz-root{
-  --surface-1:#1a1a19; --surface-2:#222221; --border:#33322f;
-  --text-primary:#fff; --text-secondary:#c3c2b7; --text-muted:#8e8c83;
-  --series-1:#3987e5; --series-2:#d95926; --grid:#2b2a28;
-  --band:rgba(12,163,12,.16);
-}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--surface-1);
-  font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
-.viz-root{background:var(--surface-1);color:var(--text-primary);
-  max-width:840px;margin:0 auto;padding:32px 20px 56px}
-h1{font-size:20px;margin:0 0 2px;letter-spacing:-.01em}
-.subj{display:inline-block;vertical-align:2px;margin-left:6px;padding:2px 8px;border-radius:99px;
-  background:var(--surface-2);border:1px solid var(--border);font-size:12px;font-weight:600;
-  color:var(--text-secondary);letter-spacing:.02em}
-.sub{color:var(--text-secondary);margin:0 0 24px;font-size:13px}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:24px}
-.tile{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
-.tl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}
-.tv{font-size:26px;font-weight:600;margin:3px 0 1px;font-variant-numeric:tabular-nums}
-.tv.up{color:var(--crit)} .tv.down{color:#0ca30c}
-.ts{font-size:12px;color:var(--text-secondary)}
-.card{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;
-  padding:14px 12px 4px;margin-bottom:14px}
-.card h2{font-size:13px;margin:0 0 2px;padding:0 4px;font-weight:600}
-.card p{font-size:12px;color:var(--text-secondary);margin:0 0 4px;padding:0 4px}
-svg{width:100%;height:auto;display:block;overflow:visible}
-.grid{stroke:var(--grid);stroke-width:1}
-.line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.se{fill:var(--series-1);opacity:.14}
-.fitband{fill:var(--text-secondary);opacity:.13}
-.fit{stroke:var(--text-primary);stroke-width:1.6;stroke-dasharray:5 3;opacity:.75}
-.anchor{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:.8}
-.anchorlab{fill:var(--text-muted);font-size:10px;font-weight:700;text-anchor:middle}
-tr.exc td{opacity:.55;text-decoration:line-through}
-tr.exc td:last-child{text-decoration:none;font-style:italic}
-.dot{stroke:var(--surface-2);stroke-width:2}
-.dot.flagged{stroke:var(--warn);stroke-width:3}
-.hit{fill:transparent;cursor:pointer}
-.band{fill:var(--band)}
-.ylab{fill:var(--text-muted);font-size:10px;text-anchor:end;font-variant-numeric:tabular-nums}
-.xlab{fill:var(--text-muted);font-size:10px;text-anchor:middle}
-.empty{color:var(--text-secondary);font-size:13px;padding:0 4px 12px}
-table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
-th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border)}
-th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);font-weight:600}
-td.r,th.r{text-align:right}
-tr.sus td:first-child::after{content:" ⚠";color:var(--warn)}
-td.note{color:var(--text-secondary);cursor:text;min-width:100px}
-td.note:empty::before{content:'add note…';color:var(--text-muted);font-style:italic}
-td.note:focus{outline:2px solid var(--series-1);outline-offset:-2px;border-radius:3px}
-td.rm{text-align:right;white-space:nowrap}
-button.rm{all:unset;cursor:pointer;color:var(--text-muted);font-size:12px}
-button.rm:hover{color:var(--warn);text-decoration:underline}
-body.file button.rm{display:none}
-#save-bar{display:none;position:fixed;bottom:0;left:0;right:0;
-  background:var(--series-1);color:#fff;text-align:center;padding:8px;
-  font-size:13px;font-weight:600;cursor:pointer;z-index:10}
-ul.notes{margin:18px 0 0;padding-left:18px;color:var(--text-secondary);font-size:13px}
-ul.notes li{margin-bottom:7px}
-#tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;
-  background:var(--text-primary);color:var(--surface-1);padding:5px 9px;border-radius:6px;
-  font-size:12px;white-space:nowrap;z-index:9;font-variant-numeric:tabular-nums}
-</style></head>
-<body><div class="viz-root">
-<h1>FaceAge tracker <span class="subj">__SUBJ__</span></h1>
-<p class="sub">Local summary statistics only — no photographs. Generated __GEN__.
-  <button class="rm" id="open-results" title="Open the results folder in Finder">open data folder</button></p>
-<div class="tiles">__TILES__</div>
-
-<div class="card">
-  <h2>FaceAge — session mean</h2>
-  <p>Blue band is ±1 standard error per session. Dashed line is the §3 OLS fit
-     with its 95% confidence ribbon. Ringed points had an exposure shift.
-     __FITNOTE__</p>
-  __C1__
-</div>
-
-<div class="card">
-  <h2>Face exposure — session mean brightness (0–255)</h2>
-  <p>Green band is ±__TOL__ of your baseline. Drift outside it can move FaceAge by
-     more than real change does.</p>
-  __C2__
-</div>
-
-<div class="card" style="padding-bottom:10px">
-  <h2>All sessions</h2>
-  <table><thead><tr><th>Session</th><th>Camera</th><th class="r">Time</th><th class="r">Mean</th><th class="r">Median</th>
-  <th class="r">n</th><th class="r">SD</th><th class="r">Exposure</th>
-  <th class="r">Flagged</th><th>Notes</th><th></th></tr></thead><tbody>__ROWS__</tbody></table>
-</div>
-
-<ul class="notes">__NOTES__</ul>
-</div>
-<div id="tip"></div>
-<div id="save-bar">Save notes</div>
-<script>
-var tip=document.getElementById('tip');
-document.querySelectorAll('.hit').forEach(function(el){
-  el.addEventListener('mouseenter',function(e){
-    tip.textContent=el.getAttribute('data-tip');tip.style.opacity='1';});
-  el.addEventListener('mousemove',function(e){
-    tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-32)+'px';});
-  el.addEventListener('mouseleave',function(){tip.style.opacity='0';});
-});
-/* --- remove a session from the tracker (served by `faceage app` only) --- */
-if(!(location.protocol==='http:'||location.protocol==='https:')) document.body.className='file';
-function post(path,body){
-  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(function(r){return r.json().then(function(j){ if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j;});});
-}
-document.querySelectorAll('button.fo').forEach(function(b){
-  b.addEventListener('click',function(){
-    post('/api/reveal',{person:'__SUBJ__',date:b.getAttribute('data-session'),what:'session'})
-      .catch(function(e){ alert('Could not open: '+e.message); });
-  });
-});
-document.getElementById('open-results').addEventListener('click',function(){
-  post('/api/reveal',{person:'__SUBJ__',what:'results'}).catch(function(e){ alert('Could not open: '+e.message); });
-});
-document.querySelectorAll('button.rm:not(.fo)').forEach(function(b){
-  b.addEventListener('click',function(){
-    var d=b.getAttribute('data-session');
-    if(!confirm('Remove '+d+' from the tracker?\n\nThe row leaves the history and the chart. The photos, '+
-                'checklist and result stay on disk, and the removal is logged with your reason, '+
-                'so the session can be added back later.')) return;
-    var reason=prompt('Why? (kept in the log)','')||'';
-    fetch('/api/remove',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({person:'__SUBJ__',date:d,reason:reason})})
-      .then(function(r){return r.json().then(function(j){
-        if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
-        location.reload();});})
-      .catch(function(e){ alert('Could not remove: '+e.message); });
-  });
-});
-/* --- editable notes --- */
-var dirty=false, bar=document.getElementById('save-bar');
-function gatherNotes(){
-  var m={};
-  document.querySelectorAll('td.note').forEach(function(td){
-    m[td.getAttribute('data-session')]=td.textContent.trim();});
-  return m;
-}
-document.querySelectorAll('td.note').forEach(function(td){
-  td.addEventListener('input',function(){dirty=true;bar.style.display='block';});
-  td.addEventListener('keydown',function(e){
-    if(e.key==='Enter'){e.preventDefault();td.blur();}});
-});
-function done(msg,ms){
-  bar.textContent=msg;
-  setTimeout(function(){bar.style.display='none';bar.textContent='Save notes';dirty=false;},ms);
-}
-bar.addEventListener('click',function(){
-  var notes=gatherNotes();
-  /* Served by `faceage app` there is a server to save to, so save directly.
-     Opened as a plain file there is not, and the browser download + sidecar
-     merge is the fallback. */
-  if(location.protocol==='http:'||location.protocol==='https:'){
-    bar.textContent='Saving\u2026';
-    fetch('/api/notes',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({person:'__SUBJ__',notes:notes})})
-      .then(function(r){return r.json().then(function(j){
-        if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
-        done('Saved',1400);});})
-      .catch(function(e){ done('Could not save: '+e.message,5000); });
-    return;
-  }
-  var blob=new Blob([JSON.stringify(notes,null,2)],{type:'application/json'});
-  var a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='session_notes.json';a.click();URL.revokeObjectURL(a.href);
-  done('Saved \u2014 drop session_notes.json next to tracker.html, then regenerate',3500);
-});
-</script>
-</body></html>"""
-
-    page = (page.replace('__GEN__', datetime.datetime.now().strftime('%d %b %Y, %H:%M'))
-                .replace('__TILES__', tile_html)
-                .replace('__C1__', chart(rows, 'mean', 'var(--series-1)', se_key='se',
-                                         fit=fit, anchors=anchors))
-                .replace('__FITNOTE__', html.escape(fitnote))
-                .replace('__C2__', chart(rows, 'luma', 'var(--series-2)', band=band,
-                                         fmt='%.0f', anchors=anchors,
-                                         empty_msg='No exposure data yet — sessions scored '
-                                                   'before exposure tracking was added.'))
-                .replace('__TOL__', '%.0f' % LUMA_TOL)
-                .replace('__ROWS__', trows)
-                .replace('__NOTES__', note_html)
-                .replace('__SUBJ__', html.escape(SUBJECT)))
-
-    with open(OUT, 'w') as fh:
-        fh.write(page)
-    print(OUT)
 
 
 def write_notes(notes_dict):
