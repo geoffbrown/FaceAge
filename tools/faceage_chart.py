@@ -5,7 +5,7 @@ Reads ~/FaceAgeData/results/faceage_history.csv and writes tracker.html beside i
 Stdlib only, no network, no external assets - the page works offline and nothing
 leaves this machine. Contains summary statistics only; no photographs.
 """
-import csv, os, sys, math, html, datetime
+import csv, json, os, sys, math, html, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import faceage_analysis as fa
@@ -16,11 +16,33 @@ RESULTS = os.path.expanduser(os.environ.get(
 HISTORY  = os.path.join(RESULTS, 'faceage_history.csv')
 VALIDITY = os.path.join(RESULTS, 'session_validity.csv')
 ANCHORS  = os.path.join(RESULTS, 'anchors.csv')
+NOTES    = os.path.join(RESULTS, 'session_notes.json')
 OUT      = os.path.join(RESULTS, 'tracker.html')
 
 LUMA_TOL = 5.0          # exposure drift beyond this makes a session suspect
 W, H     = 760, 210     # chart geometry
 PAD_L, PAD_R, PAD_T, PAD_B = 54, 18, 14, 30
+
+
+def run_time(raw):
+    """The session's run timestamp, rendered in local time.
+
+    Timestamps written since the UTC change carry an explicit offset and are
+    converted. Rows written before it are naive LOCAL time — treating those as
+    UTC would shift them by the local offset, which for PDT is 7 hours and moves
+    a morning session into the previous evening. A naive value is therefore
+    shown as-is, because local is exactly what it already is.
+    """
+    raw = (raw or '').strip()
+    if not raw:
+        return ''
+    try:
+        ts = datetime.datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return ''
+    if ts.tzinfo is None:
+        return ts.strftime('%-I:%M %p')
+    return ts.astimezone().strftime('%-I:%M %p')
 
 
 def num(v):
@@ -57,6 +79,8 @@ def load():
                 'luma': num(r.get('mean_luma')),
                 'flagged': int(num(r.get('n_flagged')) or 0),
                 'failed': int(num(r.get('n_failed')) or 0),
+                'run_time': run_time(r.get('run_timestamp')),
+                'notes': (r.get('notes') or '').strip(),
             }
             ok, reason = validity.get(d, (True, ''))
             if ok:
@@ -66,6 +90,24 @@ def load():
                 excluded.append(rec)
     if not rows:
         sys.exit("History has no usable dated sessions.")
+
+    # Notes typed into a tracker opened as a plain file arrive as a sidecar the
+    # browser downloaded. Served by `faceage app` they are saved directly and
+    # this path never runs.
+    if os.path.exists(NOTES):
+        try:
+            with open(NOTES) as nf:
+                sidecar = json.load(nf)
+            merged = False
+            for r in rows + excluded:
+                if r['label'] in sidecar:
+                    r['notes'] = sidecar[r['label']]
+                    merged = True
+            if merged:
+                write_notes(sidecar)
+                os.remove(NOTES)
+        except (json.JSONDecodeError, OSError):
+            pass
     return (sorted(rows, key=lambda r: r['date']),
             sorted(excluded, key=lambda r: r['date']))
 
@@ -276,22 +318,27 @@ def main():
         for t, v, s, cls in tiles)
 
     trows = ''.join(
-        '<tr%s><td>%s</td><td class="r">%.2f</td><td class="r">%s</td>'
+        '<tr%s><td>%s</td><td class="r">%s</td><td class="r">%.2f</td><td class="r">%s</td>'
         '<td class="r">%d</td><td class="r">%s</td><td class="r">%s</td>'
-        '<td class="r">%s</td></tr>'
-        % (' class="sus"' if r['_suspect'] else '', html.escape(r['label']), r['mean'],
+        '<td class="r">%s</td><td class="note" contenteditable data-session="%s">%s</td></tr>'
+        % (' class="sus"' if r['_suspect'] else '', html.escape(r['label']),
+           html.escape(r['run_time']), r['mean'],
            ('%.2f' % r['median']) if r['median'] is not None else '—', r['n'],
            ('%.2f' % r['std']) if r['std'] else '—',
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
-           ('%d' % r['flagged']) if r['flagged'] else '0')
+           ('%d' % r['flagged']) if r['flagged'] else '0',
+           html.escape(r['label'], quote=True), html.escape(r['notes']))
         for r in rows)
+    # Same nine columns as the rows above, or the table misaligns.
     trows += ''.join(
-        '<tr class="exc"><td>%s</td><td class="r">%.2f</td><td class="r">—</td>'
-        '<td class="r">%d</td><td class="r">—</td><td class="r">%s</td>'
-        '<td class="r" title="%s">excluded</td></tr>'
-        % (html.escape(r['label']), r['mean'], r['n'],
+        '<tr class="exc"><td>%s</td><td class="r">%s</td><td class="r">%.2f</td>'
+        '<td class="r">—</td><td class="r">%d</td><td class="r">—</td>'
+        '<td class="r">%s</td><td class="r" title="%s">excluded</td>'
+        '<td class="note" contenteditable data-session="%s">%s</td></tr>'
+        % (html.escape(r['label']), html.escape(r['run_time']), r['mean'], r['n'],
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
-           html.escape(r.get('reason') or '', quote=True))
+           html.escape(r.get('reason') or '', quote=True),
+           html.escape(r['label'], quote=True), html.escape(r['notes']))
         for r in excluded)
 
     notes = []
@@ -396,6 +443,12 @@ th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border)}
 th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);font-weight:600}
 td.r,th.r{text-align:right}
 tr.sus td:first-child::after{content:" ⚠";color:var(--warn)}
+td.note{color:var(--text-secondary);cursor:text;min-width:100px}
+td.note:empty::before{content:'add note…';color:var(--text-muted);font-style:italic}
+td.note:focus{outline:2px solid var(--series-1);outline-offset:-2px;border-radius:3px}
+#save-bar{display:none;position:fixed;bottom:0;left:0;right:0;
+  background:var(--series-1);color:#fff;text-align:center;padding:8px;
+  font-size:13px;font-weight:600;cursor:pointer;z-index:10}
 ul.notes{margin:18px 0 0;padding-left:18px;color:var(--text-secondary);font-size:13px}
 ul.notes li{margin-bottom:7px}
 #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;
@@ -424,14 +477,15 @@ ul.notes li{margin-bottom:7px}
 
 <div class="card" style="padding-bottom:10px">
   <h2>All sessions</h2>
-  <table><thead><tr><th>Session</th><th class="r">Mean</th><th class="r">Median</th>
+  <table><thead><tr><th>Session</th><th class="r">Time</th><th class="r">Mean</th><th class="r">Median</th>
   <th class="r">n</th><th class="r">SD</th><th class="r">Exposure</th>
-  <th class="r">Flagged</th></tr></thead><tbody>__ROWS__</tbody></table>
+  <th class="r">Flagged</th><th>Notes</th></tr></thead><tbody>__ROWS__</tbody></table>
 </div>
 
 <ul class="notes">__NOTES__</ul>
 </div>
 <div id="tip"></div>
+<div id="save-bar">Save notes</div>
 <script>
 var tip=document.getElementById('tip');
 document.querySelectorAll('.hit').forEach(function(el){
@@ -440,6 +494,43 @@ document.querySelectorAll('.hit').forEach(function(el){
   el.addEventListener('mousemove',function(e){
     tip.style.left=(e.clientX+14)+'px';tip.style.top=(e.clientY-32)+'px';});
   el.addEventListener('mouseleave',function(){tip.style.opacity='0';});
+});
+/* --- editable notes --- */
+var dirty=false, bar=document.getElementById('save-bar');
+function gatherNotes(){
+  var m={};
+  document.querySelectorAll('td.note').forEach(function(td){
+    m[td.getAttribute('data-session')]=td.textContent.trim();});
+  return m;
+}
+document.querySelectorAll('td.note').forEach(function(td){
+  td.addEventListener('input',function(){dirty=true;bar.style.display='block';});
+  td.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){e.preventDefault();td.blur();}});
+});
+function done(msg,ms){
+  bar.textContent=msg;
+  setTimeout(function(){bar.style.display='none';bar.textContent='Save notes';dirty=false;},ms);
+}
+bar.addEventListener('click',function(){
+  var notes=gatherNotes();
+  /* Served by `faceage app` there is a server to save to, so save directly.
+     Opened as a plain file there is not, and the browser download + sidecar
+     merge is the fallback. */
+  if(location.protocol==='http:'||location.protocol==='https:'){
+    bar.textContent='Saving\u2026';
+    fetch('/api/notes',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({person:'__SUBJ__',notes:notes})})
+      .then(function(r){return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+        done('Saved',1400);});})
+      .catch(function(e){ done('Could not save: '+e.message,5000); });
+    return;
+  }
+  var blob=new Blob([JSON.stringify(notes,null,2)],{type:'application/json'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='session_notes.json';a.click();URL.revokeObjectURL(a.href);
+  done('Saved \u2014 drop session_notes.json next to tracker.html, then regenerate',3500);
 });
 </script>
 </body></html>"""
@@ -463,5 +554,57 @@ document.querySelectorAll('.hit').forEach(function(el){
     print(OUT)
 
 
+def write_notes(notes_dict):
+    """Merge {session_date: note} into the history CSV, atomically.
+
+    This rewrites the study's data of record, so it is written to a temporary
+    file in the same directory and then renamed over the original. os.replace
+    is atomic within a filesystem, so an interruption leaves the old history
+    intact rather than a truncated one.
+
+    Notes are commentary and nothing reads them for analysis. Session exclusion
+    is governed solely by session_validity.csv, so a note can never quietly
+    remove a session from the series.
+    """
+    with open(HISTORY, newline='') as fh:
+        reader = csv.DictReader(fh)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    if 'notes' not in fieldnames:
+        fieldnames.append('notes')
+    for r in rows:
+        sd = (r.get('session_date') or '').strip()
+        if sd in notes_dict:
+            r['notes'] = notes_dict[sd]
+    tmp = HISTORY + '.tmp'
+    with open(tmp, 'w', newline='') as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp, HISTORY)
+
+
+# kept so an older caller does not break
+_write_notes_to_csv = write_notes
+
+
+def set_note(session_date, note_text):
+    """Set or replace the note for a session in the history CSV."""
+    if not os.path.exists(HISTORY):
+        sys.exit("No history yet at %s" % HISTORY)
+    with open(HISTORY, newline='') as fh:
+        dates = [(r.get('session_date') or '').strip() for r in csv.DictReader(fh)]
+    if session_date not in dates:
+        sys.exit("No session '%s' in history. Available: %s" % (session_date, ', '.join(dates)))
+    _write_notes_to_csv({session_date: note_text})
+    print("Note for %s: %s" % (session_date, note_text if note_text else '(cleared)'))
+
+
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) >= 3 and sys.argv[1] == 'note':
+        session = sys.argv[2]
+        text = ' '.join(sys.argv[3:]) if len(sys.argv) > 3 else ''
+        set_note(session, text)
+        main()  # regenerate the tracker after editing
+    else:
+        main()
