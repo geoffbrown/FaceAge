@@ -670,6 +670,86 @@ class TestScoredSessionIsClosed(WebTestCase):
         self.assertFalse(self.w.read_checklist('me', '2026-09-12')['valid'])
 
 
+class TestDiscard(WebTestCase):
+    """Deleting the photos left every other trace behind, because the summary,
+    QA, checklist, validity row and history row key off the label rather than
+    the folder. Discard has to remove all of them."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-12',
+                          'files': ['IMG_1.jpg']})
+        a = {k: True for k, _ in self.w.CHECKLIST}
+        a['light'] = False
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-12', 'answers': a})
+        self.history('me', '2026-09-12')
+        res = self.w.results_dir('me')
+        with open(os.path.join(res, '2026-09-12_summary.json'), 'w') as fh:
+            json.dump({'mean': 45.62, 'n': 14, 'n_total_images': 14}, fh)
+        with open(os.path.join(res, '2026-09-12_per_image.csv'), 'w') as fh:
+            fh.write('subj_id,file,faceage,status,hard_flags,advisory_flags,'
+                     'confidence,n_faces,source_w,source_h,crop_w,crop_h,'
+                     'crop_luma_mean,crop_luma_std,face_fill_height_frac,'
+                     'face_fill_area_frac,error\n')
+
+    def test_everything_is_gone_afterwards(self):
+        r = self.w.do_discard({'person': 'me', 'date': '2026-09-12',
+                               'reason': 'bad light'})
+        self.assertTrue(r['ok'])
+        self.assertEqual(self.w.staged('me', '2026-09-12'), [])
+        self.assertIsNone(self.w.read_checklist('me', '2026-09-12'))
+        self.assertIsNone(self.w.session_result('me', '2026-09-12'))
+        self.assertFalse(self.w.session_scored('me', '2026-09-12'))
+        pf = self.w.do_preflight('me', '2026-09-12')
+        self.assertFalse(pf['available'])
+
+    def test_validity_row_is_removed_too(self):
+        vfile = os.path.join(self.w.results_dir('me'), 'session_validity.csv')
+        with open(vfile) as fh:
+            self.assertEqual(len(list(csv.DictReader(fh))), 1)
+        self.w.do_discard({'person': 'me', 'date': '2026-09-12', 'reason': 'x'})
+        with open(vfile) as fh:
+            self.assertEqual(list(csv.DictReader(fh)), [])
+
+    def test_nothing_is_actually_deleted(self):
+        """Photographs are archived, never removed."""
+        r = self.w.do_discard({'person': 'me', 'date': '2026-09-12', 'reason': 'x'})
+        bin_dir = r['archived_to']
+        self.assertTrue(os.path.isfile(os.path.join(bin_dir, 'photos', 'IMG_1.jpg')))
+        self.assertTrue(os.path.isfile(os.path.join(bin_dir, 'checklist.json')))
+        self.assertTrue(os.path.isfile(os.path.join(bin_dir, '2026-09-12_summary.json')))
+
+    def test_the_discard_is_logged_with_its_reason(self):
+        self.w.do_discard({'person': 'me', 'date': '2026-09-12',
+                           'reason': 'overhead light'})
+        log = os.path.join(self.w.results_dir('me'), 'discarded.csv')
+        with open(log) as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(rows[0]['session'], '2026-09-12')
+        self.assertEqual(rows[0]['was_scored'], 'yes')
+        self.assertEqual(rows[0]['reason'], 'overhead light')
+
+    def test_other_sessions_are_untouched(self):
+        self.history('me', '2026-09-11')
+        self.w.do_discard({'person': 'me', 'date': '2026-09-12', 'reason': 'x'})
+        self.assertTrue(self.w.session_scored('me', '2026-09-11'))
+
+    def test_the_label_is_reusable_afterwards(self):
+        """Start fresh means the same date works again, not a take letter."""
+        self.w.do_discard({'person': 'me', 'date': '2026-09-12', 'reason': 'x'})
+        self.assertEqual(self.w.next_take('me', '2026-09-12'), '2026-09-12')
+        r = self.w.do_import({'person': 'me', 'date': '2026-09-12',
+                              'files': ['IMG_1.jpg']})
+        self.assertIsNone(r['moved_to_new_take'])
+
+    def test_discarding_an_empty_session_is_harmless(self):
+        r = self.w.do_discard({'person': 'me', 'date': '2026-09-20', 'reason': ''})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['removed'], [])
+
+
 class TestPrefill(WebTestCase):
     def setUp(self):
         WebTestCase.setUp(self)
