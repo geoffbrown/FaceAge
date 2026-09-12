@@ -62,6 +62,7 @@ IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.heic', '.heif')
 
 sys.path.insert(0, HERE)
 import faceage_preflight as pf          # noqa: E402
+import faceage_analysis as fa            # noqa: E402
 
 # The §1 pre-committed validity conditions, phrased as things to confirm. Each
 # is a condition under which the session does NOT count; leaving one unconfirmed
@@ -616,6 +617,82 @@ def previous_checklist(name, date):
     return read_checklist(name, earlier[-1])
 
 
+def do_discard(body):
+    """Throw a session away completely and start over.
+
+    Deleting the photos alone left every trace behind -- the summary, the
+    per-image QA, the checklist, the validity row and the history row all key
+    off the session label, not the folder. This removes all of them.
+
+    Photos and records are MOVED to discarded/, never deleted: docs/MAC_APP.md
+    keeps photographs because a weird session needs inspecting later, and the
+    discard itself is logged so the record shows what happened.
+
+    On the §1 question: a rehearsal session is not study data. §4 says these do
+    not enter the series at all, and before B is set there is no series for a
+    discard to bias. Once B exists, discarding a SCORED session is a real
+    deletion of study data -- it is still allowed, because refusing would just
+    move the decision somewhere unrecorded, but it is logged with its reason and
+    flagged in the UI.
+    """
+    name = safe_subject(body.get('person'))
+    date = safe_date(body.get('date'))
+    reason = (body.get('reason') or '').strip()[:300].replace(',', ';')
+
+    res = results_dir(name)
+    was_scored = session_scored(name, date)
+    stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+    bin_dir = os.path.join(subj_dir(name), 'discarded', '%s_%s' % (date, stamp))
+    os.makedirs(bin_dir, exist_ok=True)
+
+    moved = []
+    sd = session_dir(name, date)
+    if os.path.isdir(sd):
+        shutil.move(sd, os.path.join(bin_dir, 'photos'))
+        moved.append('photos')
+    for fname in ('%s_summary.json' % date, '%s_per_image.csv' % date):
+        src = os.path.join(res, fname)
+        if os.path.exists(src):
+            shutil.move(src, os.path.join(bin_dir, fname))
+            moved.append(fname)
+    cl = checklist_path(name, date)
+    if os.path.exists(cl):
+        shutil.move(cl, os.path.join(bin_dir, 'checklist.json'))
+        moved.append('checklist')
+
+    # drop the rows keyed to this label
+    for path, key in ((os.path.join(res, 'faceage_history.csv'), 'session_date'),
+                      (os.path.join(res, 'session_validity.csv'), 'session_date')):
+        if not os.path.exists(path):
+            continue
+        with open(path) as fh:
+            rows = list(csv.DictReader(fh))
+            cols = list(rows[0].keys()) if rows else []
+        keep = [r for r in rows if (r.get(key) or '').strip() != date]
+        if cols and len(keep) != len(rows):
+            tmp = path + '.tmp'
+            with open(tmp, 'w', newline='') as fh:
+                w = csv.DictWriter(fh, fieldnames=cols)
+                w.writeheader()
+                w.writerows(keep)
+            os.replace(tmp, path)
+            moved.append(os.path.basename(path) + ' row')
+
+    log = os.path.join(res, 'discarded.csv')
+    new = not os.path.exists(log)
+    os.makedirs(res, exist_ok=True)
+    with open(log, 'a', newline='') as fh:
+        if new:
+            fh.write('session,discarded_at,was_scored,reason,archived_to\n')
+        fh.write('%s,%s,%s,%s,%s\n' % (date,
+                                        datetime.datetime.now().replace(microsecond=0).isoformat(),
+                                        'yes' if was_scored else 'no',
+                                        reason or '(none given)',
+                                        os.path.basename(bin_dir)))
+    return {'ok': True, 'session': date, 'was_scored': was_scored,
+            'removed': moved, 'archived_to': bin_dir}
+
+
 def do_score(body):
     name = safe_subject(body.get('person'))
     date = safe_date(body.get('date'))
@@ -725,6 +802,14 @@ def build_chart(person):
     return out.stdout.strip()
 
 
+def fa_anchors(person):
+    """B and R, if set. Before B exists there is no series yet (§4)."""
+    try:
+        return fa.load_anchors(os.path.join(results_dir(person), 'anchors.csv'))
+    except Exception:                                    # noqa: BLE001
+        return {}
+
+
 def state(person=None, date=None, browse=None):
     people = list_people()
     if person is None and people:
@@ -741,6 +826,7 @@ def state(person=None, date=None, browse=None):
                   'checklist': read_checklist(person, date),
                   'checklist_stale': checklist_stale(person, date),
                   'prev_checklist': previous_checklist(person, date),
+                  'has_b': bool(fa_anchors(person).get('B')),
                   'scored': session_scored(person, date),
                   'result': session_result(person, date),
                   'baseline_luma': baseline_luma(person),
@@ -776,6 +862,8 @@ button{font:inherit;padding:7px 14px;border-radius:7px;border:1px solid var(--bd
   background:var(--s1);color:var(--tx);cursor:pointer}
 button:hover:not(:disabled){border-color:var(--ac)}
 button.primary{background:var(--ac);border-color:var(--ac);color:#fff;font-weight:600}
+button.danger{border-color:var(--er);color:var(--er)}
+button.danger:hover:not(:disabled){background:var(--erbg);border-color:var(--er)}
 button:disabled{opacity:.45;cursor:not-allowed}
 input,select{font:inherit;padding:6px 9px;border-radius:7px;
   border:1px solid var(--bd);background:var(--s1);color:var(--tx)}
@@ -909,11 +997,18 @@ function render(){
          S.staged.length+' photo'+(S.staged.length===1?'':'s')+' staged'+
          (S.scored?' · <span class="pill">scored</span>':'')+
          (S.scored?' <button onclick="reshoot()" style="padding:3px 9px;font-size:12px">Reshoot</button>':'')+
+         ((S.staged.length||S.scored||S.checklist)
+            ? ' <button onclick="discard()" class="danger" style="padding:3px 9px;font-size:12px">Start fresh</button>'
+            : '')+
          '</div>');
 
   // ---- import ----
   var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
   o.push('<div class="card"><h2>1 \u00b7 Import photos</h2>');
+  if(S.discardNote)
+    o.push('<div class="warn">Discarded <b>'+h(S.discardNote)+'</b>. '+
+           'Everything was moved to <code>discarded/</code>, not deleted. '+
+           'This session is empty and ready to start over.</div>');
   if(S.movedNote)
     o.push('<div class="warn">That session had already been scored, so these '+
            'photos opened a new take: <b>'+h(S.movedNote)+'</b>. It starts with '+
@@ -1144,6 +1239,27 @@ function sameAsLast(){
   S.prefill = (S.prev_checklist && S.prev_checklist.answers) || null;
   render();
 }
+function discard(){
+  var scored = S.scored, hasB = S.has_b;
+  var msg = 'Throw away session '+S.date+' completely?\\n\\n'+
+            'Photos, checklist, score, QA and its rows in the series are moved '+
+            'to discarded/ and the session starts over empty.';
+  if(scored && hasB)
+    msg += '\\n\\nThis session HAS BEEN SCORED and B is set, so this removes a '+
+           'point from the study series. The discard is logged with your reason.';
+  else if(scored)
+    msg += '\\n\\nIt has been scored, but B is not set yet, so nothing has '+
+           'entered the study series.';
+  if(!confirm(msg)) return;
+  var reason = prompt('Why? (recorded in discarded.csv)', '') || '';
+  api('/api/discard', {person:S.person, date:S.date, reason:reason})
+    .then(function(j){
+      S.prefill=null; S.reopen=false; S.movedNote=null; sel={};
+      S.discardNote = j.session + ' \u2014 ' + j.removed.join(', ');
+      load();
+    }).catch(function(e){ err(e.message); });
+}
+
 function reshoot(){
   api('/api/reshoot', {person:S.person, date:S.date}).then(function(j){
     S.date = j.session; S.prefill = null; S.reopen = false; sel = {}; load();
@@ -1230,6 +1346,7 @@ ROUTES_POST = {
     '/api/score': do_score,
     '/api/notes': do_notes,
     '/api/reshoot': do_reshoot,
+    '/api/discard': do_discard,
 }
 
 
