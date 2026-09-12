@@ -51,6 +51,44 @@ parse_common() {
   HISTORY="$RESULTS_DIR/faceage_history.csv"
 }
 
+# With iCloud Drive's "Optimize Mac Storage" on, an evicted photo is replaced by
+# a dot-prefixed `.name.jpg.icloud` placeholder. Those do not match the *.jpg
+# glob, so they do not error - they silently vanish from the session and shrink
+# n. Partial eviction is the dangerous case: a re-scored session would report a
+# mean over 4 of 12 photos with no warning at all. Refuse instead.
+check_icloud_stubs() {
+  local dir="$1" stubs
+  stubs=$(find "$dir" -maxdepth 1 -type f -name '.*.icloud' 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$stubs" -eq 0 ]] && return 0
+  warn "$stubs photo(s) in this session are evicted iCloud placeholders."
+  if command -v brctl >/dev/null 2>&1; then
+    info "Downloading them with brctl..."
+    brctl download "$dir" 2>/dev/null || true
+    local remaining
+    remaining=$(find "$dir" -maxdepth 1 -type f -name '.*.icloud' 2>/dev/null | wc -l | tr -d ' ')
+    [[ "$remaining" -eq 0 ]] && { info "All photos are local now."; return 0; }
+    die "$remaining photo(s) are still evicted after brctl download.
+Scoring now would silently compute the session mean over a subset."
+  fi
+  die "brctl not available; cannot fetch the evicted photos.
+Open the session folder in Finder to force a download, then re-run.
+Scoring now would silently compute the session mean over a subset."
+}
+
+# §1 of docs/PREREGISTRATION.md: a protocol failure is recorded BEFORE the score
+# is looked at. Scoring an already-invalidated session is allowed - it just will
+# not enter the analysis - but it should never be a surprise.
+warn_if_invalidated() {
+  local session="$1" vfile="$RESULTS_DIR/session_validity.csv"
+  [[ -f "$vfile" ]] || return 0
+  local row
+  row=$(awk -F, -v s="$session" '$1==s && tolower($2) ~ /^(no|0|false|invalid)$/ {print; exit}' "$vfile")
+  [[ -n "$row" ]] || return 0
+  warn "Session $session is recorded as a PROTOCOL FAILURE:"
+  warn "  $(echo "$row" | cut -d, -f3-)"
+  warn "It will be scored, but excluded from the pre-registered analysis."
+}
+
 ensure_colima() {
   command -v colima >/dev/null || die "colima not installed. Run: brew install colima docker"
   if ! colima status >/dev/null 2>&1; then
@@ -116,6 +154,9 @@ Re-run with --replace to archive them and use this set instead."
   local n
   n=$(find "$session_dir" "${find_images[@]}" 2>/dev/null | wc -l | tr -d ' ')
   [[ "$n" -gt 0 ]] || die "no .jpg/.jpeg/.png photos in $session_dir"
+
+  check_icloud_stubs "$session_dir"
+  warn_if_invalidated "$session"
 
   ensure_colima; ensure_model; ensure_image
   mkdir -p "$RESULTS_DIR"
@@ -184,6 +225,47 @@ cmd_chart() {
   command -v open >/dev/null && open "$out"
 }
 
+# Recording a protocol failure. The ordering is the whole point: this is meant
+# to be run before `faceage run`, so the decision cannot be influenced by the
+# number. Refuses once the session has been scored, for exactly that reason.
+cmd_invalidate() {
+  local session="${1:-}" reason="${2:-}"
+  [[ -n "$session" ]] || die "usage: faceage invalidate YYYY-MM-DD \"reason\" [--force]"
+  [[ "$session" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "session must be YYYY-MM-DD"
+  [[ -n "$reason" ]] || die "a reason is required (§1 pre-registration)"
+  case "$reason" in *,*) die "reason cannot contain a comma (CSV)";; esac
+
+  local force=0
+  [[ "${3:-}" == "--force" ]] && force=1
+
+  mkdir -p "$RESULTS_DIR"
+  local vfile="$RESULTS_DIR/session_validity.csv"
+  [[ -f "$vfile" ]] || echo 'session_date,valid,reason,recorded_at' > "$vfile"
+
+  if grep -q "^$session," "$vfile" 2>/dev/null; then
+    die "session $session already has a validity record in $vfile"
+  fi
+
+  if [[ -f "$HISTORY" ]] && grep -q "^$session," "$HISTORY" 2>/dev/null; then
+    if [[ "$force" -eq 0 ]]; then
+      die "session $session has ALREADY BEEN SCORED.
+Invalidating it now is not an exclusion, it is discarding a result after seeing
+it (§1). If the protocol failure was genuinely identified before the score was
+looked at, re-run with --force and say so in the reason."
+    fi
+    warn "Recording a failure for an already-scored session, as forced."
+  fi
+
+  printf '%s,no,%s,%s\n' "$session" "$reason" "$(date +%FT%T)" >> "$vfile"
+  info "Recorded protocol failure for $session: $reason"
+  info "It will be excluded from the analysis, with this reason shown."
+}
+
+cmd_analysis() {
+  [[ -f "$HISTORY" ]] || die "no history yet for subject '$SUBJECT' — run a session first"
+  python3 "$REPO/tools/faceage_analysis.py" --results "$RESULTS_DIR" "$@"
+}
+
 cmd_subjects() {
   local base="$DATA/subjects"
   [[ -d "$base" ]] || die "no subjects yet — run a session first"
@@ -231,6 +313,10 @@ case "$sub" in
   validate) cmd_validate "$@" ;;
   history)  cmd_history ;;
   chart)    cmd_chart ;;
+  gate)     cmd_analysis --sigma "$@" ;;
+  trend)    cmd_analysis --trend --luma "$@" ;;
+  analyse|analyze) cmd_analysis --all "$@" ;;
+  invalidate) cmd_invalidate "$@" ;;
   subjects) cmd_subjects ;;
   build)    cmd_build ;;
   doctor)   cmd_doctor ;;
@@ -243,6 +329,12 @@ FaceAge — local scoring pipeline
   faceage run FILE...        stage those photos into today's session and score
   faceage chart              build + open the visual tracker dashboard
   faceage history            print the longitudinal series
+
+  faceage gate               §4 repeatability: sigma + the build/no-build call
+  faceage trend              §3 OLS slope + 95% CI, and the §6 luma check
+  faceage analyse            all of the pre-registered analysis
+  faceage invalidate DATE "reason"
+                             record a protocol failure BEFORE scoring (§1)
   faceage subjects           list everyone with data on this machine
   faceage validate [tol]     re-run validation against the authors' CSV
   faceage build              (re)build the linux/amd64 container image
