@@ -272,6 +272,75 @@ class TestValidityGate(unittest.TestCase):
         self.assertEqual([r['label'] for r in rows], ['2026-09-11', '2026-09-14'])
 
 
+class TestAnchors(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, 'anchors.csv')
+
+    def test_absent_file(self):
+        self.assertEqual(fa.load_anchors(self.path), {})
+
+    def test_reads_b_and_r(self):
+        with open(self.path, 'w') as fh:
+            fh.write('anchor,date,note\nB,2026-09-25,x\nR,2027-04-02,y\n')
+        a = fa.load_anchors(self.path)
+        self.assertEqual(a['B'], datetime.date(2026, 9, 25))
+        self.assertEqual(a['R'], datetime.date(2027, 4, 2))
+
+    def test_ignores_junk(self):
+        with open(self.path, 'w') as fh:
+            fh.write('anchor,date,note\nX,2026-01-01,x\nB,notadate,y\n')
+        self.assertEqual(fa.load_anchors(self.path), {})
+
+
+class TestSeriesForTrend(unittest.TestCase):
+    """§4: rehearsal sessions do not enter the series."""
+
+    def setUp(self):
+        self.rows = mkrows(['2026-09-11', '2026-09-13', '2026-09-25',
+                            '2026-10-23'], [44.1, 44.5, 44.3, 43.9])
+
+    def test_no_anchor_keeps_everything(self):
+        keep, pre = fa.series_for_trend(self.rows, {})
+        self.assertEqual(len(keep), 4)
+        self.assertEqual(pre, [])
+
+    def test_b_splits_rehearsal_off(self):
+        keep, pre = fa.series_for_trend(
+            self.rows, {'B': datetime.date(2026, 9, 25)})
+        self.assertEqual([r['label'] for r in keep],
+                         ['2026-09-25', '2026-10-23'])
+        self.assertEqual([r['label'] for r in pre],
+                         ['2026-09-11', '2026-09-13'])
+
+    def test_b_is_inclusive(self):
+        """The baseline session itself is the first point of the series."""
+        keep, _ = fa.series_for_trend(
+            self.rows, {'B': datetime.date(2026, 9, 25)})
+        self.assertEqual(keep[0]['label'], '2026-09-25')
+
+    def test_rehearsal_exclusion_changes_the_slope(self):
+        """The whole reason for the rule: rehearsal points sit a fortnight
+        before the series and would lever the fit."""
+        with_all = fa.trend(self.rows)
+        from_b, _ = fa.series_for_trend(
+            self.rows, {'B': datetime.date(2026, 9, 13)})
+        self.assertNotAlmostEqual(with_all['slope_per_month'],
+                                  fa.trend(from_b)['slope_per_month'], places=3)
+
+
+class TestRehearsalConstant(unittest.TestCase):
+    def test_five_pre_registered_dates(self):
+        self.assertEqual(len(fa.REHEARSAL_SESSIONS), 5)
+        self.assertEqual(fa.REHEARSAL_SESSIONS[0], '2026-09-11')
+        self.assertEqual(fa.REHEARSAL_SESSIONS[-1], '2026-09-17')
+
+    def test_dates_are_parseable_and_within_seven_days(self):
+        ds = [datetime.date.fromisoformat(d) for d in fa.REHEARSAL_SESSIONS]
+        self.assertEqual(ds, sorted(ds))
+        self.assertLessEqual((ds[-1] - ds[0]).days, 7)
+
+
 class TestCLI(unittest.TestCase):
     def test_runs_end_to_end(self):
         d = tempfile.mkdtemp()

@@ -7,11 +7,16 @@ leaves this machine. Contains summary statistics only; no photographs.
 """
 import csv, os, sys, math, html, datetime
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import faceage_analysis as fa
+
 SUBJECT = os.environ.get('FACEAGE_SUBJECT_LABEL', 'me')
 RESULTS = os.path.expanduser(os.environ.get(
     'FACEAGE_RESULTS', '~/FaceAgeData/subjects/%s/results' % SUBJECT))
-HISTORY = os.path.join(RESULTS, 'faceage_history.csv')
-OUT     = os.path.join(RESULTS, 'tracker.html')
+HISTORY  = os.path.join(RESULTS, 'faceage_history.csv')
+VALIDITY = os.path.join(RESULTS, 'session_validity.csv')
+ANCHORS  = os.path.join(RESULTS, 'anchors.csv')
+OUT      = os.path.join(RESULTS, 'tracker.html')
 
 LUMA_TOL = 5.0          # exposure drift beyond this makes a session suspect
 W, H     = 760, 210     # chart geometry
@@ -29,7 +34,10 @@ def num(v):
 def load():
     if not os.path.exists(HISTORY):
         sys.exit("No history yet at %s — run a session first." % HISTORY)
-    rows = []
+    # A session recorded as a protocol failure (§1) must not be drawn as if it
+    # were data. It is listed in the table, struck through, with its reason.
+    validity = fa.load_validity(VALIDITY)
+    rows, excluded = [], []
     with open(HISTORY) as fh:
         for r in csv.DictReader(fh):
             d = (r.get('session_date') or '').strip()
@@ -42,17 +50,24 @@ def load():
                 continue
             n = int(num(r.get('n')) or 0)
             std = num(r.get('std'))
-            rows.append({
+            rec = {
                 'date': date, 'label': d, 'mean': mean, 'n': n, 'std': std,
                 'se': (std / math.sqrt(n)) if (std and n > 1) else 0.0,
                 'median': num(r.get('median')),
                 'luma': num(r.get('mean_luma')),
                 'flagged': int(num(r.get('n_flagged')) or 0),
                 'failed': int(num(r.get('n_failed')) or 0),
-            })
+            }
+            ok, reason = validity.get(d, (True, ''))
+            if ok:
+                rows.append(rec)
+            else:
+                rec['reason'] = reason
+                excluded.append(rec)
     if not rows:
         sys.exit("History has no usable dated sessions.")
-    return sorted(rows, key=lambda r: r['date'])
+    return (sorted(rows, key=lambda r: r['date']),
+            sorted(excluded, key=lambda r: r['date']))
 
 
 def scale(rows, key, lo_key=None, hi_key=None, pad_frac=0.18, band=None):
@@ -75,14 +90,35 @@ def scale(rows, key, lo_key=None, hi_key=None, pad_frac=0.18, band=None):
     return lo - pad, hi + pad
 
 
-def chart(rows, key, color, se_key=None, band=None, fmt='%.2f', empty_msg=''):
-    """One time-series panel. Single series, so no legend - the card title names it."""
+def chart(rows, key, color, se_key=None, band=None, fmt='%.2f', empty_msg='',
+          fit=None, anchors=None):
+    """One time-series panel. Single series, so no legend - the card title names it.
+
+    `fit` is the §3 regression: {'fn': dx -> (y, lo, hi), 'x0': day-offset of the
+    first fitted session, 'x1': day-offset of the last}. Drawn as a line with a
+    95% confidence ribbon for the fitted mean.
+
+    `anchors` marks B and R. The x domain is widened to include them, so a retest
+    date months past the last session still appears.
+    """
     pts = [r for r in rows if r.get(key) is not None]
     if not pts:
         return '<p class="empty">%s</p>' % html.escape(empty_msg)
 
-    ymin, ymax = scale(pts, key, se_key, band=band)
+    fitvals = []
+    if fit:
+        for dx in range(int(fit['x0']), int(fit['x1']) + 1,
+                        max(1, (int(fit['x1']) - int(fit['x0'])) // 60 or 1)):
+            fitvals += list(fit['fn'](dx))
+    ymin, ymax = scale(pts, key, se_key, band=band or (tuple(
+        (min(fitvals), max(fitvals))) if fitvals else None))
+
     d0, d1 = rows[0]['date'], rows[-1]['date']
+    for a in (anchors or {}).values():
+        if a < d0:
+            d0 = a
+        if a > d1:
+            d1 = a
     span = max((d1 - d0).days, 1)
 
     def X(r):
@@ -116,6 +152,31 @@ def chart(rows, key, color, se_key=None, band=None, fmt='%.2f', empty_msg=''):
         out.append('<text class="xlab" x="%.1f" y="%.1f">%s</text>'
                    % (X(r), H - 9, r['date'].strftime('%d %b')))
 
+    # §3 fitted slope with its 95% confidence ribbon, under everything else
+    if fit:
+        x0, x1 = int(fit['x0']), int(fit['x1'])
+        step = max(1, (x1 - x0) // 60 or 1)
+        xs = list(range(x0, x1 + 1, step))
+        if xs[-1] != x1:
+            xs.append(x1)
+        shift = (rows[0]['date'] - d0).days
+        def FX(dx):
+            return PAD_L + ((dx + shift) / span) * (W - PAD_L - PAD_R)
+        hi = ' '.join('%.1f,%.1f' % (FX(dx), Y(fit['fn'](dx)[2])) for dx in xs)
+        lo = ' '.join('%.1f,%.1f' % (FX(dx), Y(fit['fn'](dx)[1]))
+                      for dx in reversed(xs))
+        out.append('<polygon class="fitband" points="%s %s"/>' % (hi, lo))
+        out.append('<line class="fit" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                   % (FX(x0), Y(fit['fn'](x0)[0]), FX(x1), Y(fit['fn'](x1)[0])))
+
+    # B / R study anchors
+    for name, adate in sorted((anchors or {}).items()):
+        ax = PAD_L + ((adate - d0).days / span) * (W - PAD_L - PAD_R)
+        out.append('<line class="anchor" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                   % (ax, PAD_T, ax, H - PAD_B))
+        out.append('<text class="anchorlab" x="%.1f" y="%.1f">%s</text>'
+                   % (ax, PAD_T - 2, html.escape(name)))
+
     # error band (±1 SE) drawn under the line
     if se_key and any(r.get(se_key) for r in pts):
         up = ' '.join('%.1f,%.1f' % (X(r), Y(r[key] + r.get(se_key, 0))) for r in pts)
@@ -145,8 +206,37 @@ def chart(rows, key, color, se_key=None, band=None, fmt='%.2f', empty_msg=''):
             % (W, H, html.escape(key), ''.join(out)))
 
 
+def make_fit(series, ref_date):
+    """§3 OLS fit as a drawable band: returns dx -> (yhat, lo, hi).
+
+    The ribbon is the 95% CI for the FITTED MEAN, s*sqrt(1/n + (x-xbar)^2/Sxx),
+    not a prediction interval for a future session -- it shows how well the
+    trend line itself is pinned down, which is the quantity §3 reports.
+    """
+    if len(series) < 3:
+        return None
+    xs = [(r['date'] - ref_date).days for r in series]
+    ys = [r['mean'] for r in series]
+    f = fa.ols(xs, ys)
+    if f is None or f['df'] < 1:
+        return None
+    t = fa.t_crit(f['df'])
+    n, mx, sxx, sres = f['n'], sum(xs) / len(xs), f['sxx'], f['resid_se']
+
+    def fn(dx):
+        yhat = f['intercept'] + f['slope'] * dx
+        half = t * sres * math.sqrt(1.0 / n + ((dx - mx) ** 2) / sxx)
+        return (yhat, yhat - half, yhat + half)
+
+    return {'fn': fn, 'x0': min(xs), 'x1': max(xs), 'ols': f, 't': t}
+
+
 def main():
-    rows = load()
+    rows, excluded = load()
+    anchors = fa.load_anchors(ANCHORS)
+    series, pre_b = fa.series_for_trend(rows, anchors)
+    trend = fa.trend(series)
+    fit = make_fit(series, rows[0]['date'])
     base, last = rows[0], rows[-1]
     delta = last['mean'] - base['mean']
     luma_base = base.get('luma')
@@ -160,16 +250,25 @@ def main():
 
     tiles = [
         ('Latest FaceAge', '%.2f' % last['mean'], last['label'], ''),
-        ('Change vs baseline',
-         ('%+.2f' % delta) if len(rows) > 1 else '—',
-         'since %s' % base['label'] if len(rows) > 1 else 'baseline session',
-         ('up' if delta > 0 else 'down') if len(rows) > 1 else ''),
+        # §3: pairwise deltas are not interpreted, only the fitted trend. The
+        # tile therefore reports the fitted slope and its verdict, not the
+        # last-minus-first difference, which is the number most likely to be
+        # over-read.
+        ('Fitted slope (§3)',
+         ('%+.2f' % trend['slope_per_month']) if trend.get('ok') else '—',
+         ('yr/month, 95%% CI %+.2f to %+.2f' % trend['slope_ci']
+          if trend.get('ok') else 'needs 3+ sessions in the series'),
+         ('' if not trend.get('ok') or not trend['detected']
+          else ('up' if trend['slope_per_month'] > 0 else 'down'))),
         ('Sessions logged', str(len(rows)),
          '%d photo%s total' % (sum(r['n'] for r in rows),
                                '' if sum(r['n'] for r in rows) == 1 else 's'), ''),
-        ('This session precision',
-         ('±%.2f' % last['se']) if last['se'] else '—',
-         'standard error, n=%d' % last['n'], ''),
+        ('Result (§3)',
+         (trend['verdict'].upper() if trend.get('ok') else 'NOT YET'),
+         ('CI excludes zero' if trend.get('ok') and trend['detected']
+          else ('CI includes zero' if trend.get('ok')
+                else 'not enough sessions')),
+         ''),
     ]
     tile_html = ''.join(
         '<div class="tile"><div class="tl">%s</div><div class="tv %s">%s</div>'
@@ -186,8 +285,33 @@ def main():
            ('%.1f' % r['luma']) if r['luma'] is not None else '—',
            ('%d' % r['flagged']) if r['flagged'] else '0')
         for r in rows)
+    trows += ''.join(
+        '<tr class="exc"><td>%s</td><td class="r">%.2f</td><td class="r">—</td>'
+        '<td class="r">%d</td><td class="r">—</td><td class="r">%s</td>'
+        '<td class="r" title="%s">excluded</td></tr>'
+        % (html.escape(r['label']), r['mean'], r['n'],
+           ('%.1f' % r['luma']) if r['luma'] is not None else '—',
+           html.escape(r.get('reason') or '', quote=True))
+        for r in excluded)
 
     notes = []
+    if excluded:
+        notes.append('%d session(s) recorded as protocol failures and excluded '
+                     'from every statistic on this page (§1): %s. They are shown '
+                     'struck through for completeness.'
+                     % (len(excluded),
+                        '; '.join('%s — %s' % (r['label'], r.get('reason') or 'no reason')
+                                  for r in excluded)))
+    if trend.get('ok') and not trend['detected']:
+        notes.append('The fitted slope\u2019s confidence interval includes zero, so the '
+                     'result is "not detected". Not trending, not early signs. '
+                     'Pairwise session-to-session deltas are not interpreted (§3).')
+    if not anchors.get('B'):
+        notes.append('B (baseline) is not set, so every session including rehearsal '
+                     'ones is in the fit. Set it with `faceage anchor B YYYY-MM-DD`.')
+    elif pre_b:
+        notes.append('%d rehearsal session(s) before B are plotted but excluded from '
+                     'the fit (§4).' % len(pre_b))
     if len(rows) < 2:
         notes.append('Only one session so far. A trend needs several; treat this as the '
                      'baseline, not a result.')
@@ -203,6 +327,14 @@ def main():
                  'Week-to-week differences are mostly measurement noise; read the trend '
                  'across a month or more, not consecutive points.')
     note_html = ''.join('<li>%s</li>' % html.escape(n) for n in notes)
+
+    if not fit:
+        fitnote = 'No fit yet — the series needs at least three sessions.'
+    else:
+        lo, hi = trend['slope_ci']
+        fitnote = ('Fit: %+.3f yr/month (95%% CI %+.3f to %+.3f) over %d days, n=%d.'
+                   % (trend['slope_per_month'], lo, hi,
+                      trend['window_days'], trend['n']))
 
     page = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -246,6 +378,12 @@ svg{width:100%;height:auto;display:block;overflow:visible}
 .grid{stroke:var(--grid);stroke-width:1}
 .line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .se{fill:var(--series-1);opacity:.14}
+.fitband{fill:var(--text-secondary);opacity:.13}
+.fit{stroke:var(--text-primary);stroke-width:1.6;stroke-dasharray:5 3;opacity:.75}
+.anchor{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:2 3;opacity:.8}
+.anchorlab{fill:var(--text-muted);font-size:10px;font-weight:700;text-anchor:middle}
+tr.exc td{opacity:.55;text-decoration:line-through}
+tr.exc td:last-child{text-decoration:none;font-style:italic}
 .dot{stroke:var(--surface-2);stroke-width:2}
 .dot.flagged{stroke:var(--warn);stroke-width:3}
 .hit{fill:transparent;cursor:pointer}
@@ -271,7 +409,9 @@ ul.notes li{margin-bottom:7px}
 
 <div class="card">
   <h2>FaceAge — session mean</h2>
-  <p>Shaded band is ±1 standard error. Ringed points had an exposure shift.</p>
+  <p>Blue band is ±1 standard error per session. Dashed line is the §3 OLS fit
+     with its 95% confidence ribbon. Ringed points had an exposure shift.
+     __FITNOTE__</p>
   __C1__
 </div>
 
@@ -306,9 +446,11 @@ document.querySelectorAll('.hit').forEach(function(el){
 
     page = (page.replace('__GEN__', datetime.datetime.now().strftime('%d %b %Y, %H:%M'))
                 .replace('__TILES__', tile_html)
-                .replace('__C1__', chart(rows, 'mean', 'var(--series-1)', se_key='se'))
+                .replace('__C1__', chart(rows, 'mean', 'var(--series-1)', se_key='se',
+                                         fit=fit, anchors=anchors))
+                .replace('__FITNOTE__', html.escape(fitnote))
                 .replace('__C2__', chart(rows, 'luma', 'var(--series-2)', band=band,
-                                         fmt='%.0f',
+                                         fmt='%.0f', anchors=anchors,
                                          empty_msg='No exposure data yet — sessions scored '
                                                    'before exposure tracking was added.'))
                 .replace('__TOL__', '%.0f' % LUMA_TOL)

@@ -261,6 +261,38 @@ looked at, re-run with --force and say so in the reason."
   info "It will be excluded from the analysis, with this reason shown."
 }
 
+# B and R are study landmarks, not data. B starts the six-month clock and fixes
+# where the series begins; R is the retest. Kept in the results dir so the chart
+# and the analysis agree on them.
+cmd_anchor() {
+  local which="${1:-}" when="${2:-}"
+  case "$which" in
+    B|b|R|r) ;;
+    '') # no args: show what is set
+       local vfile="$RESULTS_DIR/anchors.csv"
+       [[ -f "$vfile" ]] || { info "No anchors set for '$SUBJECT'."; return 0; }
+       column -s, -t < "$vfile"; return 0 ;;
+    *) die "usage: faceage anchor B|R YYYY-MM-DD" ;;
+  esac
+  which="$(printf '%s' "$which" | tr '[:lower:]' '[:upper:]')"
+  [[ "$when" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "date must be YYYY-MM-DD"
+
+  mkdir -p "$RESULTS_DIR"
+  local vfile="$RESULTS_DIR/anchors.csv"
+  [[ -f "$vfile" ]] || echo 'anchor,date,note' > "$vfile"
+
+  if grep -q "^$which," "$vfile" 2>/dev/null; then
+    local cur; cur=$(grep "^$which," "$vfile" | head -1 | cut -d, -f2)
+    warn "$which is already set to $cur."
+    warn "Moving it changes which sessions are in the series and refits the trend."
+    read -r -p "Change $which from $cur to $when? [y/N] " reply
+    [[ "$reply" =~ ^[Yy]$ ]] || die "unchanged"
+    grep -v "^$which," "$vfile" > "$vfile.tmp" && mv "$vfile.tmp" "$vfile"
+  fi
+  printf '%s,%s,set %s\n' "$which" "$when" "$(date +%F)" >> "$vfile"
+  info "Anchor $which set to $when"
+}
+
 cmd_analysis() {
   [[ -f "$HISTORY" ]] || die "no history yet for subject '$SUBJECT' — run a session first"
   python3 "$REPO/tools/faceage_analysis.py" --results "$RESULTS_DIR" "$@"
@@ -317,6 +349,7 @@ case "$sub" in
   trend)    cmd_analysis --trend --luma "$@" ;;
   analyse|analyze) cmd_analysis --all "$@" ;;
   invalidate) cmd_invalidate "$@" ;;
+  anchor)   cmd_anchor "$@" ;;
   subjects) cmd_subjects ;;
   build)    cmd_build ;;
   doctor)   cmd_doctor ;;
@@ -335,6 +368,8 @@ FaceAge — local scoring pipeline
   faceage analyse            all of the pre-registered analysis
   faceage invalidate DATE "reason"
                              record a protocol failure BEFORE scoring (§1)
+  faceage anchor B|R DATE    set the baseline / retest landmark
+  faceage anchor             show the anchors currently set
   faceage subjects           list everyone with data on this machine
   faceage validate [tol]     re-run validation against the authors' CSV
   faceage build              (re)build the linux/amd64 container image
