@@ -146,6 +146,62 @@ def baseline_luma(name):
     return None
 
 
+HOME = os.path.expanduser('~')
+
+
+def safe_dir(path):
+    """Resolve a browse path, refusing anything outside the user's own files.
+
+    The server runs as you on your own machine, so reading your filesystem is
+    within its remit — but browsing is driven from a web page, so the reachable
+    area is bounded to $HOME and /Volumes (external drives). Symlinks are
+    resolved first, so a link out of $HOME does not widen it.
+    """
+    if not path:
+        return INBOX
+    p = os.path.realpath(os.path.expanduser(path))
+    # $HOME and /Volumes cover the real cases (your files, external drives).
+    # The configured inbox and data roots are added because they are allowed to
+    # live anywhere -- FACEAGE_INBOX is explicitly settable.
+    roots = [os.path.realpath(HOME), '/Volumes',
+             os.path.realpath(INBOX), os.path.realpath(DATA)]
+    if not any(p == r or p.startswith(r + os.sep) for r in roots):
+        raise ValueError('folder must be inside your home folder or /Volumes')
+    if not os.path.isdir(p):
+        raise ValueError('not a folder: %s' % p)
+    return p
+
+
+def list_dir(path):
+    """Subfolders and images in one folder, for the picker."""
+    d = safe_dir(path)
+    dirs, images = [], []
+    try:
+        entries = os.listdir(d)
+    except PermissionError:
+        raise ValueError('no permission to read %s' % d)
+    for f in sorted(entries):
+        if f.startswith('.'):
+            continue
+        full = os.path.join(d, f)
+        if os.path.isdir(full):
+            dirs.append(f)
+        elif f.lower().endswith(IMAGE_EXTS) and os.path.isfile(full):
+            st = os.stat(full)
+            images.append({'file': f, 'size': st.st_size, 'mtime': st.st_mtime,
+                           'when': time.strftime('%d %b %H:%M',
+                                                 time.localtime(st.st_mtime)),
+                           'heic': f.lower().endswith(('.heic', '.heif'))})
+    images.sort(key=lambda r: -r['mtime'])
+    parent = os.path.dirname(d)
+    try:
+        safe_dir(parent)
+    except ValueError:
+        parent = None
+    return {'path': d, 'parent': parent, 'dirs': dirs[:200],
+            'images': images[:400], 'n_images': len(images)}
+
+
 def scan_inbox(limit=60):
     """Recent images in the inbox folder — where AirDrop lands them."""
     if not os.path.isdir(INBOX):
@@ -265,6 +321,7 @@ def do_import(body):
     name = safe_subject(body.get('person'))
     date = safe_date(body.get('date'))
     files = body.get('files') or []
+    src_dir = safe_dir(body.get('dir') or INBOX)
     if not files:
         raise ValueError('no photos selected')
 
@@ -276,7 +333,7 @@ def do_import(body):
             raise ValueError('bad filename: %s' % f)
         if not f.lower().endswith(IMAGE_EXTS):
             raise ValueError('not an image: %s' % f)
-        src = os.path.join(INBOX, f)
+        src = os.path.join(src_dir, f)
         if not os.path.isfile(src):
             skipped.append(f)
             continue
@@ -420,13 +477,15 @@ def build_chart(person):
     return out.stdout.strip()
 
 
-def state(person=None, date=None):
+def state(person=None, date=None, browse=None):
     people = list_people()
     if person is None and people:
         person = people[0]['name']
     date = date or datetime.date.today().isoformat()
+    listing = list_dir(browse or INBOX)
     s = {'people': people, 'person': person, 'date': date,
-         'inbox_path': INBOX, 'inbox': scan_inbox(), 'data_path': DATA,
+         'inbox_path': INBOX, 'browse': listing,
+         'inbox': listing['images'], 'data_path': DATA,
          'checklist_items': [{'key': k, 'label': l} for k, l in CHECKLIST],
          'job': JOB.snapshot()}
     if person:
@@ -470,6 +529,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
 input,select{font:inherit;padding:6px 9px;border-radius:7px;
   border:1px solid var(--bd);background:var(--s1);color:var(--tx)}
 .muted{color:var(--t2);font-size:12.5px}
+.dirs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px;max-height:110px;overflow:auto}
+button.dir{padding:4px 10px;font-size:12.5px;border-radius:6px}
 .pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;
   font-weight:600;border:1px solid var(--bd);color:var(--t2)}
 ul.files{list-style:none;margin:8px 0 0;padding:0;max-height:230px;overflow:auto}
@@ -525,8 +586,10 @@ function api(path, body){
 
 function load(){
   var qs = '?person='+encodeURIComponent(S&&S.person||'')+
-           '&date='+encodeURIComponent(S&&S.date||'');
-  return api('/api/state'+qs).then(function(j){S=j; render();})
+           '&date='+encodeURIComponent(S&&S.date||'')+
+           '&browse='+encodeURIComponent(S&&S.browseDir||'');
+  return api('/api/state'+qs).then(function(j){
+      var keep = S && S.browseDir; S = j; if(keep) S.browseDir = keep; render();})
     .catch(function(e){
       /* Never leave the page blank. A silent failure here is indistinguishable
          from a broken build. */
@@ -574,12 +637,27 @@ function render(){
          (S.scored?' · <span class="pill">scored</span>':'')+'</div>');
 
   // ---- import ----
-  o.push('<div class="card"><h2>1 · Import from '+h(S.inbox_path)+'</h2>');
-  if(!S.inbox.length){
-    o.push('<p class="muted">No images found. AirDrop from your phone, then reload.</p>');
+  var B = S.browse || {path:S.inbox_path, dirs:[], images:[], parent:null};
+  o.push('<div class="card"><h2>1 \u00b7 Import photos</h2>');
+  o.push('<div class="row" style="margin-bottom:8px">');
+  o.push('<button onclick="goUp()"'+(B.parent?'':' disabled')+' title="parent folder">\u2191</button>');
+  o.push('<input id="path" value="'+h(B.path)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:12.5px">');
+  o.push('<button onclick="goPath()">Go</button>');
+  o.push('<button onclick="goHome()">Downloads</button>');
+  o.push('</div>');
+
+  if(B.dirs.length){
+    o.push('<div class="dirs">');
+    B.dirs.forEach(function(d){
+      o.push('<button class="dir" data-dir="'+h(d)+'">📁 '+h(d)+'</button>');});
+    o.push('</div>');
+  }
+
+  if(!B.images.length){
+    o.push('<p class="muted">No images in this folder. Open a subfolder above, or type a path and press Go.</p>');
   } else {
     o.push('<ul class="files">');
-    S.inbox.forEach(function(f){
+    B.images.forEach(function(f){
       o.push('<li><input type="checkbox" class="ib" value="'+h(f.file)+'"'+
              (sel[f.file]?' checked':'')+'>'+
              '<span class="fname">'+h(f.file)+'</span>'+
@@ -587,12 +665,15 @@ function render(){
              '<span class="muted">'+h(f.when)+'</span></li>');});
     o.push('</ul>');
     o.push('<div class="row" style="margin-top:9px">');
+    o.push('<button onclick="pickAll()">Select all ('+B.images.length+')</button>');
     o.push('<button onclick="pickRecent()">Select 10 most recent</button>');
+    o.push('<button onclick="pickNone()">Clear</button>');
+    o.push('<span style="flex:1"></span>');
     o.push('<button class="primary" onclick="doImport()">Import selected</button>');
     o.push('</div>');
-    if(S.inbox.some(function(f){return f.heic;}))
+    if(B.images.some(function(f){return f.heic;}))
       o.push('<div class="note">HEIC files convert to JPEG on scoring, originals kept. '+
-             'Simpler is Settings › Camera › Formats › Most Compatible, so the '+
+             'Simpler is Settings \u203a Camera \u203a Formats \u203a Most Compatible, so the '+
              'phone writes JPEG and there is no second encoder in the instrument.</div>');
   }
   if(S.staged.length)
@@ -680,13 +761,22 @@ function wire(){
   if(d) d.onchange = function(){ S.date = d.value; sel = {}; load(); };
   document.querySelectorAll('.ib').forEach(function(c){
     c.onchange = function(){ sel[c.value] = c.checked; };});
+  document.querySelectorAll('button.dir').forEach(function(b){
+    b.onclick = function(){
+      var base = S.browse.path;
+      browseTo(base + (base.charAt(base.length-1)==='/'?'':'/') + b.getAttribute('data-dir'));
+    };});
 }
 
-function pickRecent(){
-  sel = {};
-  S.inbox.slice(0,10).forEach(function(f){ sel[f.file]=true; });
-  render();
-}
+function imgs(){ return (S.browse && S.browse.images) || []; }
+function pickRecent(){ sel={}; imgs().slice(0,10).forEach(function(f){sel[f.file]=true;}); render(); }
+function pickAll(){ sel={}; imgs().forEach(function(f){sel[f.file]=true;}); render(); }
+function pickNone(){ sel={}; render(); }
+
+function browseTo(p){ S.browseDir=p; sel={}; load(); }
+function goPath(){ browseTo(document.getElementById('path').value.trim()); }
+function goUp(){ if(S.browse && S.browse.parent) browseTo(S.browse.parent); }
+function goHome(){ browseTo(S.inbox_path); }
 
 function addPerson(){
   var n = document.getElementById('newname').value.trim();
@@ -698,7 +788,8 @@ function addPerson(){
 function doImport(){
   var files = Object.keys(sel).filter(function(k){return sel[k];});
   if(!files.length){ err('Select some photos first.'); return; }
-  api('/api/import', {person:S.person, date:S.date, files:files})
+  api('/api/import', {person:S.person, date:S.date, files:files,
+                      dir:(S.browse&&S.browse.path)||S.inbox_path})
     .then(function(){ sel={}; load(); })
     .catch(function(e){ err(e.message); });
 }
@@ -781,7 +872,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, PAGE, 'text/html')
             if path == '/api/state':
                 return self._json(state(q.get('person') or None,
-                                        q.get('date') or None))
+                                        q.get('date') or None,
+                                        q.get('browse') or None))
             if path == '/api/job':
                 return self._json(JOB.snapshot())
             if path == '/tracker':
