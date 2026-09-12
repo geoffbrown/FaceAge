@@ -1,0 +1,155 @@
+{
+  "seed": 20260912,
+  "n": 24,
+  "crops_file": "fixtures/crops_uint8.npz",
+  "crops_sha256": "f60561b5d218e39b7d87836f474f8b17571b3211363d33786e787baf0dfd63e7",
+  "model_sha256": "dd43eb66616558a70f86d55d405c2e5be1e49569654b7eb852c206393fd7a85d",
+  "produced_by": "keras-tf2.15.1",
+  "tensorflow": "2.15.1",
+  "records": [
+    {
+      "i": 0,
+      "crop_luma_mean": 56.349323,
+      "crop_luma_std": 15.203791,
+      "faceage": 34.57660675048828
+    },
+    {
+      "i": 1,
+      "crop_luma_mean": 63.195247,
+      "crop_luma_std": 17.027818,
+      "faceage": 39.39338302612305
+    },
+    {
+      "i": 2,
+      "crop_luma_mean": 70.089479,
+      "crop_luma_std": 18.883462,
+      "faceage": 48.2398796081543
+    },
+    {
+      "i": 3,
+      "crop_luma_mean": 76.983659,
+      "crop_luma_std": 16.181084,
+      "faceage": 68.18582916259766
+    },
+    {
+      "i": 4,
+      "crop_luma_mean": 83.81556,
+      "crop_luma_std": 17.623599,
+      "faceage": 64.96265411376953
+    },
+    {
+      "i": 5,
+      "crop_luma_mean": 90.669076,
+      "crop_luma_std": 19.075023,
+      "faceage": 42.420188903808594
+    },
+    {
+      "i": 6,
+      "crop_luma_mean": 97.52168,
+      "crop_luma_std": 20.456634,
+      "faceage": 36.86753463745117
+    },
+    {
+      "i": 7,
+      "crop_luma_mean": 104.380417,
+      "crop_luma_std": 21.906001,
+      "faceage": 30.67656707763672
+    },
+    {
+      "i": 8,
+      "crop_luma_mean": 111.274089,
+      "crop_luma_std": 23.371906,
+      "faceage": 49.14301300048828
+    },
+    {
+      "i": 9,
+      "crop_luma_mean": 118.13207,
+      "crop_luma_std": 24.807825,
+      "faceage": 62.057640075683594
+    },
+    {
+      "i": 10,
+      "crop_luma_mean": 124.984583,
+      "crop_luma_std": 26.22641,
+      "faceage": 57.393280029296875
+    },
+    {
+      "i": 11,
+      "crop_luma_mean": 131.806055,
+      "crop_luma_std": 27.689017,
+      "faceage": 41.93293380737305
+    },
+    {
+      "i": 12,
+      "crop_luma_mean": 138.728242,
+      "crop_luma_std": 29.107918,
+      "faceage": 81.46117401123047
+    },
+    {
+      "i": 13,
+      "crop_luma_mean": 145.547396,
+      "crop_luma_std": 30.579902,
+      "faceage": 82.70729064941406
+    },
+    {
+      "i": 14,
+      "crop_luma_mean": 152.471784,
+      "crop_luma_std": 31.966822,
+      "faceage": 73.00887298583984
+    },
+    {
+      "i": 15,
+      "crop_luma_mean": 159.23181,
+      "crop_luma_std": 33.389055,
+      "faceage": 47.24705123901367
+    },
+    {
+      "i": 16,
+      "crop_luma_mean": 166.189687,
+      "crop_luma_std": 34.786025,
+      "faceage": 50.04783630371094
+    },
+    {
+      "i": 17,
+      "crop_luma_mean": 172.957487,
+      "crop_luma_std": 36.104514,
+      "faceage": 62.73915100097656
+    },
+    {
+      "i": 18,
+      "crop_luma_mean": 179.708503,
+      "crop_luma_std": 37.17935,
+      "faceage": 77.84318542480469
+    },
+    {
+      "i": 19,
+      "crop_luma_mean": 186.264909,
+      "crop_luma_std": 38.061136,
+      "faceage": 84.01885986328125
+    },
+    {
+      "i": 20,
+      "crop_luma_mean": 192.629401,
+      "crop_luma_std": 38.590301,
+      "faceage": 52.547725677490234
+    },
+    {
+      "i": 21,
+      "crop_luma_mean": 198.609583,
+      "crop_luma_std": 38.786343,
+      "faceage": 31.176197052001953
+    },
+    {
+      "i": 22,
+      "crop_luma_mean": 204.380534,
+      "crop_luma_std": 38.592498,
+      "faceage": 29.89478302001953
+    },
+    {
+      "i": 23,
+      "crop_luma_mean": 209.748346,
+      "crop_luma_std": 38.088461,
+      "faceage": 68.76631164550781
+    }
+  ]
+}

@@ -64,3 +64,8 @@ venv/
 # ---------------------------------------------------------------
 !validation/reference/
 !validation/reference/*.csv
+
+# Core ML artefacts (large, rebuildable from the .h5)
+*.mlpackage/
+*.mlmodel
+*.mlmodelc/
