@@ -411,6 +411,16 @@ class Job(object):
                     'eta': estimate_remaining(prog, elapsed, self._phase_at),
                     'elapsed': elapsed}
 
+    def clear(self):
+        """Forget the last run. Its output describes a session that has just
+        been discarded, so leaving it on screen reads as 'nothing happened'."""
+        with self.lock:
+            if self.running:
+                return False
+            self.label, self.log, self.rc = '', [], None
+            self.started = self._phase = self._phase_at = None
+            return True
+
     def start(self, label, argv, cwd=None):
         with self.lock:
             if self.running:
@@ -682,6 +692,8 @@ def do_discard(body):
                 w.writerows(keep)
             os.replace(tmp, path)
             moved.append(os.path.basename(path) + ' row')
+
+    JOB.clear()          # its log described the session just removed
 
     log = os.path.join(res, 'discarded.csv')
     new = not os.path.exists(log)
@@ -975,8 +987,17 @@ function load(){
   var qs = '?person='+encodeURIComponent(S&&S.person||'')+
            '&date='+encodeURIComponent(S&&S.date||'')+
            '&browse='+encodeURIComponent(S&&S.browseDir||'');
+  /* State is replaced wholesale on every refresh, which silently dropped every
+     client-side flag -- including the confirmation shown after a discard, so a
+     discard looked like it had done nothing. These are UI state, not server
+     state, and are carried across explicitly. */
+  var CARRY = ['browseDir','oneoff','prefill','reopen','discardNote','movedNote'];
+  var prev = S;
   return api('/api/state'+qs).then(function(j){
-      var keep = S && S.browseDir; S = j; if(keep) S.browseDir = keep; render();})
+      S = j;
+      if(prev) CARRY.forEach(function(k){
+        if(prev[k] !== undefined && prev[k] !== null) S[k] = prev[k]; });
+      render();})
     .catch(function(e){
       /* Never leave the page blank. A silent failure here is indistinguishable
          from a broken build. */
@@ -1081,7 +1102,7 @@ function render(){
   o.push('</div>');
 
   // ---- checklist ----
-  var cl = S.checklist;
+  var cl = S.checklist, prefill = S.prefill;
   o.push('<div class="card"><h2>2 · Session checklist</h2>');
   if(cl){
     o.push('<p class="muted">Recorded '+h(cl.recorded_at)+' — '+
@@ -1253,10 +1274,12 @@ function render(){
 
 function wire(){
   var w = document.getElementById('who');
-  if(w) w.onchange = function(){ S.person = w.value; sel = {}; load(); };
+  if(w) w.onchange = function(){
+    S.person = w.value; sel = {}; clearNotes(); load(); };
   var d = document.getElementById('date');
   if(d) d.onchange = function(){
-    S.date = d.value; S.prefill = null; S.reopen = false; sel = {}; load(); };
+    S.date = d.value; S.prefill = null; S.reopen = false; sel = {};
+    clearNotes(); load(); };
   document.querySelectorAll('.ib').forEach(function(c){
     c.onchange = function(){ sel[c.value] = c.checked; };});
   var oo = document.getElementById('oneoff');
@@ -1300,6 +1323,10 @@ function discard(){
     }).catch(function(e){ err(e.message); });
 }
 
+/* One-shot confirmations. They belong to the action that produced them, not to
+   whatever session you look at next. */
+function clearNotes(){ S.discardNote = null; S.movedNote = null; }
+
 function promote(){
   api('/api/score', {person:S.person, date:S.date, oneoff:false, promote:true})
     .then(function(){ poll(); }).catch(function(e){ err(e.message); });
@@ -1307,7 +1334,8 @@ function promote(){
 
 function reshoot(){
   api('/api/reshoot', {person:S.person, date:S.date}).then(function(j){
-    S.date = j.session; S.prefill = null; S.reopen = false; sel = {}; load();
+    S.date = j.session; S.prefill = null; S.reopen = false; sel = {};
+    clearNotes(); load();
   }).catch(function(e){ err(e.message); });
 }
 
@@ -1365,6 +1393,7 @@ function saveChecklist(){
 }
 
 function score(){
+  clearNotes();
   api('/api/score', {person:S.person, date:S.date, oneoff:!!S.oneoff})
     .then(function(){ poll(); }).catch(function(e){ err(e.message); });
 }

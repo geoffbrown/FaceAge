@@ -788,6 +788,38 @@ class TestDiscard(WebTestCase):
                               'files': ['IMG_1.jpg']})
         self.assertIsNone(r['moved_to_new_take'])
 
+    def test_job_log_is_cleared(self):
+        """The last run's output described the session just removed; leaving it
+        on screen reads as 'nothing happened'."""
+        self.w.JOB.running = False
+        self.w.JOB.log = ['Scoring 14 photo(s)', 'done']
+        self.w.JOB.rc = 0
+        self.w.do_discard({'person': 'me', 'date': '2026-09-12', 'reason': 'x'})
+        snap = self.w.JOB.snapshot()
+        self.assertEqual(snap['log'], [])
+        self.assertIsNone(snap['rc'])
+
+    def test_a_running_job_is_not_cleared(self):
+        self.w.JOB.running = True
+        self.w.JOB.log = ['in progress']
+        try:
+            self.assertFalse(self.w.JOB.clear())
+            self.assertEqual(self.w.JOB.snapshot()['log'], ['in progress'])
+        finally:
+            self.w.JOB.running = False
+            self.w.JOB.log = []
+
+    def test_ui_flags_are_carried_across_a_state_refresh(self):
+        """load() replaces state wholesale, which silently dropped the discard
+        confirmation and made a discard look like a no-op."""
+        import re
+        js = re.search(r'<script>(.*?)</script>', self.w.PAGE, re.S).group(1)
+        self.assertIn('discardNote', js)
+        carry = re.search(r"var CARRY = \[(.*?)\]", js).group(1)
+        for k in ('browseDir', 'oneoff', 'prefill', 'reopen',
+                  'discardNote', 'movedNote'):
+            self.assertIn(k, carry)
+
     def test_discarding_an_empty_session_is_harmless(self):
         r = self.w.do_discard({'person': 'me', 'date': '2026-09-20', 'reason': ''})
         self.assertTrue(r['ok'])
