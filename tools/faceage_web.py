@@ -264,6 +264,40 @@ def checklist_stale(name, date):
     return False
 
 
+def session_result(name, date):
+    """The session's own number, read from the summary the pipeline writes.
+
+    Deliberately no comparison against the previous session: §3 is explicit
+    that pairwise deltas are not interpreted, only the fitted trend. Exposure IS
+    compared against the baseline, because that is a capture check rather than a
+    result.
+    """
+    p = os.path.join(results_dir(name), '%s_summary.json' % safe_date(date))
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p) as fh:
+            d = json.load(fh)
+    except (ValueError, OSError):
+        return None
+
+    base = baseline_luma(name)
+    luma = d.get('luma')
+    out = {'mean': d.get('mean'), 'median': d.get('median'), 'std': d.get('std'),
+           'n': d.get('n'), 'n_total': d.get('n_total_images'),
+           'n_failed': d.get('n_failed'), 'n_flagged': d.get('n_flagged'),
+           'min': d.get('min'), 'max': d.get('max'), 'luma': luma,
+           'baseline_luma': base,
+           'fellback': bool(d.get('fellback_to_flagged'))}
+    if luma is not None and base is not None:
+        out['luma_delta'] = round(luma - base, 1)
+        out['luma_ok'] = abs(luma - base) <= 5.0
+    cl = read_checklist(name, date)
+    out['in_series'] = bool(cl is None or cl.get('valid', True))
+    out['excluded_reason'] = None if out['in_series'] else '; '.join(cl.get('failed') or [])
+    return out
+
+
 def session_scored(name, date):
     hist = os.path.join(results_dir(name), 'faceage_history.csv')
     if not os.path.exists(hist):
@@ -600,6 +634,7 @@ def state(person=None, date=None, browse=None):
                   'checklist': read_checklist(person, date),
                   'checklist_stale': checklist_stale(person, date),
                   'scored': session_scored(person, date),
+                  'result': session_result(person, date),
                   'baseline_luma': baseline_luma(person),
                   'preflight': do_preflight(person, date)})
     return s
@@ -676,6 +711,14 @@ pre.log{background:var(--s1);border:1px solid var(--bd);border-radius:7px;
 @keyframes sweep{0%{opacity:.35}50%{opacity:1}100%{opacity:.35}}
 .progline{display:flex;align-items:center;gap:6px;margin-top:7px;font-size:13px;
   color:var(--t2);font-variant-numeric:tabular-nums}
+.result{border:1px solid var(--bd);border-radius:9px;padding:13px 15px;margin-top:10px;
+  background:var(--s1)}
+.rmain{display:flex;align-items:baseline;gap:9px}
+.rnum{font-size:34px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.runit{font-size:12.5px;color:var(--t2)}
+.rmeta{display:flex;flex-wrap:wrap;gap:14px;margin-top:7px;font-size:12.5px;
+  color:var(--t2);font-variant-numeric:tabular-nums}
+.rmeta .bad{color:var(--er)}
 .done{margin-top:9px;font-weight:600;font-size:13px}
 .done.good{color:var(--ok)} .done.bad{color:var(--er)}
 details summary{cursor:pointer;font-size:12.5px;margin-top:8px}
@@ -866,6 +909,35 @@ function render(){
     if(blocked) o.push('<span class="muted">Import photos first.</span>');
     else if(!cl) o.push('<span class="muted">Needs the checklist, unless one-off.</span>');
     o.push('</div>');
+    var R = S.result;
+    if(R && R.mean != null){
+      o.push('<div class="result">');
+      o.push('<div class="rmain"><span class="rnum">'+R.mean.toFixed(2)+'</span>'+
+             '<span class="runit">FaceAge, session mean</span></div>');
+      o.push('<div class="rmeta">');
+      o.push('<span><b>'+R.n+'</b> of '+R.n_total+' photos used</span>');
+      if(R.std!=null) o.push('<span>SD <b>'+R.std.toFixed(2)+'</b></span>');
+      if(R.min!=null&&R.max!=null)
+        o.push('<span>range '+R.min.toFixed(1)+'\u2013'+R.max.toFixed(1)+'</span>');
+      if(R.luma!=null){
+        var lt = 'exposure <b>'+R.luma.toFixed(1)+'</b>';
+        if(R.luma_delta!=null)
+          lt += ' ('+(R.luma_delta>0?'+':'')+R.luma_delta+' vs baseline)';
+        o.push('<span class="'+(R.luma_ok===false?'bad':'')+'">'+lt+'</span>');
+      }
+      o.push('</div>');
+      if(!R.in_series)
+        o.push('<div class="warn" style="margin:9px 0 0">Recorded as a protocol '+
+               'failure, so this number is <b>not in the series</b> and is excluded '+
+               'from the analysis'+(R.excluded_reason?': '+h(R.excluded_reason):'')+'.</div>');
+      if(R.fellback)
+        o.push('<div class="warn" style="margin:9px 0 0">Every photo carried a QA '+
+               'advisory, so the mean uses all scored photos. Check the capture '+
+               'before trusting it.</div>');
+      o.push('<div class="note">A single session is one point. §3 interprets the '+
+             'fitted trend across sessions, never the gap between two of them.</div>');
+      o.push('</div>');
+    }
     if(j.log.length){
       var ok = (j.rc===0);
       o.push('<div class="done '+(ok?'good':'bad')+'">'+
