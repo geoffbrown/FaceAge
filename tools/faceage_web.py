@@ -1618,6 +1618,8 @@ select{padding-right:32px}
 .camstats{display:flex;flex-direction:column;gap:2px;margin:0;font-size:13px;color:var(--ink2);
   font-variant-numeric:tabular-nums;text-align:center;line-height:1.45}
 .camstats span:empty{display:none}
+.camchk{display:flex;justify-content:center;gap:14px;font-size:13px;font-weight:600;min-height:18px}
+.camchk .ck.ok{color:var(--good)} .camchk .ck.no{color:var(--ink3)}
 .camstats b{color:var(--ink);font-weight:600}
 .camstats .good{color:var(--good)} .camstats .good b{color:var(--good)}
 .camstats .bad{color:var(--bad)} .camstats .bad b{color:var(--bad)}
@@ -1958,7 +1960,8 @@ function cardPhotos(){
 function countSel(){ return Object.keys(sel).filter(function(k){return sel[k];}).length; }
 
 /* ---- 3b · the Mac camera --------------------------------------------------- */
-var SHOTS = 10, SHOT_GAP_MS = 700, COUNTDOWN = 3, HOLD_MS = 1500, STABLE_FRAMES = 3, STUCK_MS = 45000;
+var SHOTS = 10, SHOT_GAP_MS = 700, COUNTDOWN = 3, HOLD_MS = 1200, STABLE_FRAMES = 3, STUCK_MS = 45000;
+function median(a){ if(!a.length) return null; var b = a.slice().sort(function(x,y){return x-y;}); var m = b.length>>1; return b.length%2 ? b[m] : (b[m-1]+b[m])/2; }
 /* The saved photo is a fixed centre crop of the sensor: two thirds of its height,
    3:4 portrait. Fixed, so distance stays comparable between sessions; at desk
    distance it puts the face near 85% of the saved height without leaning in. */
@@ -2013,7 +2016,7 @@ function liveBase(){
   /* Best: the analysis baseline itself, translated into what this readout
      should say, once the offset between the two has been learned. Then the
      gate is the same test the analysis will apply, with a point of margin. */
-  if(b.luma!=null && c && c.offset!=null) return {value:b.luma - c.offset, tol:4, live:true, exact:true};
+  if(b.luma!=null && c && c.offset!=null) return {value:b.luma - c.offset, tol:5, live:true, exact:true};
   if(b.live_luma!=null && b.live_method === LUMA_METHOD) return {value:b.live_luma, tol:TARGET.lumaTol, live:true};
   return null;                       // a differently measured number is not a baseline for this readout
 }
@@ -2060,6 +2063,7 @@ function cardCamera(){
            '<button class="primary big" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
            (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button>'+
            (S.staged.length ? '<button class="big" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>' : '')+'</div>');
+    o.push('<div class="camchk" id="camchk"></div>');
     o.push('<div class="camstats"><span id="camlight"></span><span id="camfill"></span><span id="camres"></span></div>');
   }
   o.push('</div><div class="camside">');
@@ -2269,7 +2273,15 @@ function detect(v, R){
   for(var y=y0;y<y1;y++) for(var x=x0;x<x1;x++){
     var i4 = (y*Wd+x)*4; sum += d[i4] + d[i4+1] + d[i4+2]; n += 3;
   }
-  CAM.luma = n ? sum/n : null;
+  CAM.lumaRaw = n ? sum/n : null;
+  /* A webcam re-meters constantly and its readings jitter. Judge a rolling
+     median of the last second, not the instant, so a steady scene reads steady. */
+  CAM.lumaHist = (CAM.lumaHist || []).concat(CAM.lumaRaw!=null ? [CAM.lumaRaw] : []).slice(-10);
+  CAM.luma = median(CAM.lumaHist);
+  if(CAM.face){
+    CAM.fillHist = (CAM.fillHist || []).concat([CAM.face.s]).slice(-6);
+    CAM.face.sRaw = CAM.face.s; CAM.face.s = median(CAM.fillHist);
+  } else CAM.fillHist = [];
 }
 
 function guidance(){
@@ -2291,10 +2303,8 @@ function guidance(){
       else { CAM.lumaOk = false; lumaCls = 'bad';
              lumaMsg = Math.round(ad)+' '+(dl>0 ? 'brighter' : 'darker')+' than your baseline. The camera sets its own exposure, so what moves this is the lamp, the room light and what is behind you: put them back the way they were, then give it a second to settle'; }
     }
-    // the camera re-meters when anything moves: wait for the reading to hold still
-    CAM.lumaHist = (CAM.lumaHist || []).concat([L]).slice(-6);
-    CAM.lumaStable = CAM.lumaHist.length >= 6 && (Math.max.apply(null, CAM.lumaHist) - Math.min.apply(null, CAM.lumaHist)) <= 2;
   }
+  var settled = (CAM.lumaHist || []).length >= 6;      // about half a second of readings
   if(!f){
     CAM.posOk = false; state = 'none';
     msg = CAM.guideErr ? 'Face guide unavailable. Line up with the oval by eye.' : 'Looking for your face…';
@@ -2312,7 +2322,15 @@ function guidance(){
     else if(lumaNote && !CAM.running){ state = 'ok'; msg = (CAM.armed ? 'Hold still. ' : '')+'Light is '+lumaNote; }
     else { state = 'ok'; msg = CAM.running ? msg : (CAM.armed ? 'Perfect. Hold still…' : 'Perfect. Press Start.'); }
   }
-  CAM.aligned = CAM.posOk && CAM.lumaOk && (base==null || CAM.lumaStable !== false);
+  CAM.aligned = CAM.posOk && CAM.lumaOk && settled;
+  /* the three checks, so it is never a mystery which one is holding things */
+  var ck = document.getElementById('camchk');
+  if(ck){
+    var sizeOk = f && !(f.s*boxFactor() < (S.fill_calibration ? TARGET.fillMin : TARGET.fillMinUncal) || f.s*boxFactor() > TARGET.fillMax);
+    var centred = f && Math.abs(f.cx-0.5) <= TARGET.tolX && Math.abs(f.cy-TARGET.cy) <= TARGET.tolY;
+    function item(ok, label){ return '<span class="ck '+(ok?'ok':'no')+'">'+(ok?'\u2713':'\u2013')+' '+label+'</span>'; }
+    ck.innerHTML = item(!!centred, 'position') + item(!!sizeOk, 'size') + item(L!=null && CAM.lumaOk && settled, 'light');
+  }
   CAM.stable = CAM.aligned ? (CAM.stable||0)+1 : 0;       // consecutive aligned readings
   CAM.guide = msg || '';
   if(CAM.aligned && !wasAligned){ CAM.alignedSince = now(); if(!CAM.running) beep(SND.lined); }
