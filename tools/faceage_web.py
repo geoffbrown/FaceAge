@@ -202,7 +202,7 @@ def list_people():
     return out
 
 
-def baseline_info(name, source=None):
+def baseline_info(name, source=None, camera=None):
     """The exposure baseline: the FIRST logged session's mean face-crop
     brightness (the pipeline's crop_luma_mean, averaged over the session).
     Every later session is held to it within +/-5.
@@ -229,7 +229,10 @@ def baseline_info(name, source=None):
         src = session_source(name, d)
         if source and src != source:
             continue
-        info = {'luma': luma, 'date': d, 'source': src}
+        cam = session_camera(name, d)
+        if camera and not same_camera(cam, camera):
+            continue
+        info = {'luma': luma, 'date': d, 'source': src, 'camera': cam}
         # The camera screen measures brightness live, and that estimate sits a
         # few units off the pipeline's crop mean for the same scene. The live
         # readings the baseline session recorded are the fair comparison for
@@ -244,9 +247,24 @@ def baseline_info(name, source=None):
     return None
 
 
-def baseline_luma(name, source=None):
-    b = baseline_info(name, source)
+def baseline_luma(name, source=None, camera=None):
+    b = baseline_info(name, source, camera)
     return b['luma'] if b else None
+
+
+def baselines_by_camera(name):
+    """One baseline per Mac camera that has a logged session."""
+    hist = os.path.join(results_dir(name), 'faceage_history.csv')
+    if not os.path.exists(hist):
+        return {}
+    with open(hist) as fh:
+        dates = [(r.get('session_date') or '').strip() for r in csv.DictReader(fh)]
+    out = {}
+    for d in sorted(dates):
+        cam = session_camera(name, d) if d else None
+        if cam and cam not in ('phone', 'import') and cam not in out:
+            out[cam] = baseline_info(name, 'mac-camera', cam)
+    return out
 
 
 HOME = os.path.expanduser('~')
@@ -261,17 +279,39 @@ def settings():
         return {}
 
 
-def luma_tol():
-    """The brightness tolerance every session is held to. 5 unless
-    `faceage tolerance` has set another with a reason on record."""
+def luma_tol(camera=None):
+    """The brightness tolerance a session is held to: the camera's own if one
+    was set with `faceage tolerance ... --camera`, else the general one, else
+    5. Different cameras auto-expose differently, so the number is per
+    instrument, in the room it lives in."""
+    st = settings()
+    by_cam = st.get('luma_tol_by_camera') or {}
     try:
-        v = float(settings().get('luma_tol') or 0)
+        general = float(st.get('luma_tol') or 0) or 5.0
     except (TypeError, ValueError):
-        v = 0
-    v = v or 5.0
-    os.environ['FACEAGE_LUMA_TOL'] = str(v)      # the chart and pre-flight read it from here
+        general = 5.0
+    v = general
+    if camera:
+        for k, val in by_cam.items():
+            if k == camera or same_camera(k, camera):
+                try:
+                    v = float(val) or general
+                except (TypeError, ValueError):
+                    pass
+                break
+    os.environ['FACEAGE_LUMA_TOL'] = str(general)            # the chart and pre-flight read these
+    os.environ['FACEAGE_LUMA_TOL_BY_CAMERA'] = json.dumps(by_cam)
     pf.LUMA_TOL = v
     return v
+
+
+def tolerances():
+    st = settings()
+    try:
+        general = float(st.get('luma_tol') or 0) or 5.0
+    except (TypeError, ValueError):
+        general = 5.0
+    return {'default': general, 'by_camera': st.get('luma_tol_by_camera') or {}}
 
 
 def safe_dir(path):
@@ -406,7 +446,7 @@ def session_result(name, date):
     except (ValueError, OSError):
         return None
 
-    base = baseline_luma(name, session_source(name, date))
+    base = baseline_luma(name, session_source(name, date), session_camera(name, date))
     luma = d.get('luma')
     out = {'mean': d.get('mean'), 'median': d.get('median'), 'std': d.get('std'),
            'n': d.get('n'), 'n_total': d.get('n_total_images'),
@@ -416,7 +456,7 @@ def session_result(name, date):
            'fellback': bool(d.get('fellback_to_flagged'))}
     if luma is not None and base is not None:
         out['luma_delta'] = round(luma - base, 1)
-        out['luma_ok'] = abs(luma - base) <= luma_tol()
+        out['luma_ok'] = abs(luma - base) <= luma_tol(session_camera(name, date))
     cl = read_checklist(name, date)
     out['valid'] = bool(cl is None or cl.get('valid', True))
     out['excluded_reason'] = None if out['valid'] else '; '.join(cl.get('failed') or [])
@@ -682,6 +722,52 @@ def session_source(name, date):
     return 'import' if staged(name, date) else None
 
 
+def session_camera(name, date):
+    """Which camera, as an instrument: the camera's own name for Mac sessions
+    ('Studio Display Camera', 'FaceTime HD Camera'), 'phone' for imported
+    photos, 'mac-camera' for Mac sessions from before the name was recorded,
+    None with no photos. A Studio Display and a built-in camera are different
+    lenses with different auto-exposure; they must never share a baseline."""
+    m = capture_manifest(name, date)
+    if m and m.get('source') == 'mac-camera':
+        return (m.get('settings') or {}).get('camera') or 'mac-camera'
+    if m and m.get('source'):
+        return m['source']
+    return 'phone' if staged(name, date) else None
+
+
+def same_camera(a, b):
+    """Old Mac sessions without a recorded name match any Mac camera."""
+    if a is None or b is None:
+        return False
+    if a == b:
+        return True
+    macs = {a, b} - {'phone', 'import'}
+    return len(macs) == 2 and 'mac-camera' in macs
+
+
+def series_camera(name):
+    """The camera behind the most recently logged session."""
+    hist = os.path.join(results_dir(name), 'faceage_history.csv')
+    if not os.path.exists(hist):
+        return None
+    with open(hist) as fh:
+        dates = [(r.get('session_date') or '').strip() for r in csv.DictReader(fh)]
+    dates = [d for d in dates if d]
+    return session_camera(name, max(dates)) if dates else None
+
+
+def short_camera(label):
+    """'Studio Display Camera' -> 'Studio Display camera'; 'phone' -> 'phone photos'."""
+    if not label:
+        return ''
+    if label in ('phone', 'import'):
+        return 'phone photos'
+    if label == 'mac-camera':
+        return 'this Mac\u2019s camera'
+    return re.sub(r'\s*camera$', '', label, flags=re.I) + ' camera'
+
+
 def series_source(name):
     """The camera behind the most recently logged session, so a session shot
     on a different camera can be warned about before it joins the series.
@@ -792,7 +878,7 @@ FLAG_LABEL = {'shave': 'did not shave', 'makeup': 'makeup or product',
               'other': 'something else'}
 
 
-def answers_from_flags(name, flags, note, source, notes):
+def answers_from_flags(name, flags, note, source, notes, body_camera=None):
     answers = {k: True for k, _ in CHECKLIST}
     said = []
     for f in flags:
@@ -808,10 +894,11 @@ def answers_from_flags(name, flags, note, source, notes):
         answers['photoday'] = False
     # a different camera from the series is a measured failure, once the study
     # has started (before the start line the earlier sessions are rehearsals)
-    prev = series_source(name)
-    if source and prev and prev != source and fa_anchors(name).get('B'):
+    prev = series_camera(name)
+    mine = (body_camera or 'mac-camera') if source == 'mac-camera' else ('phone' if source else None)
+    if mine and prev and not same_camera(prev, mine) and fa_anchors(name).get('B'):
         answers['camera'] = False
-        said.append('different camera from the rest of the tracker')
+        said.append('different camera from the rest of the tracker (%s, not %s)' % (short_camera(mine), short_camera(prev)))
     text = '; '.join(said)
     if notes:
         text = (text + '; ' if text else '') + notes
@@ -826,7 +913,8 @@ def do_checklist(body):
     flags = body.get('flags')
     if isinstance(flags, list):
         answers, notes = answers_from_flags(name, flags, body.get('note') or '',
-                                            body.get('source') or None, notes)
+                                            body.get('source') or None, notes,
+                                            body.get('camera') or None)
     else:
         answers = body.get('answers') or {}
 
@@ -1370,8 +1458,8 @@ def do_preflight(person, date):
                        'scored (%s), so the last pre-flight describes a '
                        'different set. Score again to refresh it.'
                        % ', '.join(bits)}
-    luma_tol()
-    findings = pf.diagnose(images, baseline_luma(person, session_source(person, date)))
+    luma_tol(session_camera(person, date))
+    findings = pf.diagnose(images, baseline_luma(person, session_source(person, date), session_camera(person, date)))
     return {'available': True, 'n_frames': len(images),
             'verdict': pf.verdict(findings),
             'verdict_text': pf.VERDICT_TEXT[pf.verdict(findings)],
@@ -1491,8 +1579,12 @@ def state(person=None, date=None, browse=None):
                   'capture': capture_manifest(person, date),
                   'source': session_source(person, date),
                   'series_source': series_source(person),
-                  'baseline_luma': baseline_luma(person, session_source(person, date)),
-                  'baseline': baseline_info(person, session_source(person, date)),
+                  'camera': session_camera(person, date),
+                  'series_camera': series_camera(person),
+                  'baseline_luma': baseline_luma(person, session_source(person, date), session_camera(person, date)),
+                  'baseline': baseline_info(person, session_source(person, date), session_camera(person, date)),
+                  'baselines_by_camera': baselines_by_camera(person),
+                  'tolerances': tolerances(),
                   # the camera step runs before any frame exists, so it cannot
                   # infer the source from the session: ask for the Mac's directly
                   'baseline_camera': baseline_info(person, 'mac-camera'),
@@ -2067,18 +2159,44 @@ function liveBase(){
   /* live compares to live: the baseline session recorded what this readout
      said at the time. Only if that is missing does the pipeline number stand
      in, with a looser tolerance because the two are not the same measure. */
-  var b = S.baseline_camera, c = S.luma_calibration;
+  var b = camBaseline(), c = S.luma_calibration;
   if(!b) return null;
   /* Best: the analysis baseline itself, translated into what this readout
      should say, once the offset between the two has been learned. Then the
-     gate is the same test the analysis will apply, with a point of margin. */
-  var tol = S.luma_tol || 5;
+     gate is the same test the analysis will apply. */
+  var tol = tolFor(CAM.label);
   if(b.luma!=null && c && c.offset!=null) return {value:b.luma - c.offset, tol:tol, live:true, exact:true};
   if(b.live_luma!=null && b.live_method === LUMA_METHOD) return {value:b.live_luma, tol:Math.min(tol, TARGET.lumaTol), live:true};
   return null;                       // a differently measured number is not a baseline for this readout
 }
+/* The baseline for the camera that is actually on, by its own name. A Studio
+   Display and a built-in camera are different instruments. */
+function camBaseline(){
+  var m = S.baselines_by_camera || {};
+  if(CAM.label && m[CAM.label]) return m[CAM.label];
+  if(CAM.label && m['mac-camera']) return m['mac-camera'];      // older sessions, name unknown
+  if(!CAM.label) return S.baseline_camera;
+  return null;
+}
+function tolFor(label){
+  var t = S.tolerances || {default:5, by_camera:{}};
+  if(label && t.by_camera && t.by_camera[label]!=null) return +t.by_camera[label];
+  return +t.default || 5;
+}
+function shortCam(label){
+  if(!label) return '';
+  if(label==='phone'||label==='import') return 'phone photos';
+  if(label==='mac-camera') return 'this Mac\u2019s camera';
+  return label.replace(/\s*camera$/i, '')+' camera';
+}
+function sameCam(a, b){
+  if(!a || !b) return false;
+  if(a === b) return true;
+  var macs = [a, b].filter(function(x){ return x!=='phone' && x!=='import'; });
+  return macs.length === 2 && (a==='mac-camera' || b==='mac-camera');
+}
 function baselineLine(){
-  var b = S.baseline_camera, lb = liveBase();
+  var b = camBaseline(), lb = liveBase();
   if(lb)
     return 'Brightness baseline for this camera: <b>'+Math.round(lb.value)+'</b>, set '+h(niceDate(b.date))+'. '+
            (lb.exact ? 'Matched to the analysis, so the frame goes green only when the analysis would pass it. ' : '')+
@@ -2093,6 +2211,9 @@ function cardCamera(){
   var o = ['<div class="card"><h2>Take the photos</h2>',
            '<p class="lead">Sit where you always sit and fill the oval. The frame turns green when you are lined up, then the app counts down, takes '+SHOTS+' photos while you are in position, and analyses them.</p>',
            baselineBanner()];
+  if(CAM.label && S.series_camera && ['phone','import','mac-camera'].indexOf(S.series_camera) < 0 && S.series_camera !== CAM.label)
+    o.push('<div class="note">This is the '+h(shortCam(CAM.label))+'. Your tracker so far is from the '+h(shortCam(S.series_camera))+
+           '. They are different instruments: each gets its own baseline, and their numbers are not comparable. Use one for the whole series.</div>');
   if(S.series_source && S.series_source!=='mac-camera'){
     o.push('<div class="note">Your tracker so far is built from phone photos, which cannot be compared with this camera. '+
            (S.has_b ? 'If you switch, switch for good and treat the first Mac session as your new starting point.'
@@ -2602,7 +2723,7 @@ function cardResult(){
 
   var o = ['<div class="card result">'];
   o.push('<div class="rhead"><span class="verdict '+h(v)+'">'+VERDICT_ICON[v]+' '+h(VERDICT_LABEL[v])+'</span>'+
-         '<span class="rmeta">'+h(niceDate(S.date))+(S.source==='mac-camera' ? ' · this Mac’s camera' : (S.source==='import' ? ' · imported photos' : ''))+'</span></div>');
+         '<span class="rmeta">'+h(niceDate(S.date))+(S.camera ? ' · '+h(shortCam(S.camera)) : '')+'</span></div>');
   o.push('<div class="big"><span class="n">'+R.mean.toFixed(1)+'</span><span class="u">FaceAge</span></div>');
 
   var facts = [];
@@ -2632,9 +2753,8 @@ function cardResult(){
   notes.push(conditionsNote(R));
   if(R.fellback)
     notes.push('<div class="note">Every photo had something off, so the average used all of them rather than only the clean ones.</div>');
-  if(S.source && S.series_source && S.source !== S.series_source)
-    notes.push('<div class="note">Shot on '+(S.source==='mac-camera'?'this Mac’s camera':'your phone')+
-           '; your tracker so far is from '+(S.series_source==='mac-camera'?'the Mac’s camera':'phone photos')+
+  if(S.camera && S.series_camera && !sameCam(S.camera, S.series_camera))
+    notes.push('<div class="note">Shot on the '+h(shortCam(S.camera))+'; your tracker so far is from the '+h(shortCam(S.series_camera))+
            '. '+(S.has_b ? 'Adding it would compare two cameras, not two dates.'
                         : 'Those earlier sessions were rehearsals: set your baseline anchor at this session and they drop out of the trend.')+'</div>');
   info.forEach(function(f){ notes.push('<div class="note info"><b>'+h(f.what)+'</b> '+h(f.do)+'</div>'); });
@@ -2706,7 +2826,7 @@ function flagList(){ return Object.keys(ui.flags).filter(function(k){ return ui.
 /* The record of what is different today, written before any photo is taken and
    therefore before any number exists. */
 function recordConditions(source){
-  return api('/api/checklist', {person:S.person, date:S.date, flags:flagList(), note:ui.flagNote, source:source});
+  return api('/api/checklist', {person:S.person, date:S.date, flags:flagList(), note:ui.flagNote, source:source, camera:CAM.label||null});
 }
 function refreshUseBtn(){
   var b = document.querySelector('.actions .primary');

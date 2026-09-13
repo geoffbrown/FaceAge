@@ -1437,6 +1437,89 @@ class TestTolerance(WebTestCase):
         self.assertTrue(r['luma_ok'], '+6.6 is inside a tolerance of 8')
 
 
+class TestCameraIdentity(WebTestCase):
+    """A Studio Display camera and a built-in camera are different
+    instruments. Each gets its own baseline and its own tolerance, and a
+    session from one is warned about against a tracker from the other."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def cam_session(self, date, label, luma):
+        self.w.do_capture({'person': 'me', 'date': date, 'batch': '20260913-101500', 'index': 1,
+                           'image': data_url(), 'settings': {'camera': label} if label else {},
+                           'frame': {'luma': 100.0}})
+        self.history('me', date, luma=luma)
+
+    def test_camera_is_named(self):
+        self.cam_session('2026-09-10', 'Studio Display Camera', 173.3)
+        self.cam_session('2026-09-11', None, 170.0)
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-09', 'files': ['IMG_1.jpg']})
+        self.assertEqual(self.w.session_camera('me', '2026-09-10'), 'Studio Display Camera')
+        self.assertEqual(self.w.session_camera('me', '2026-09-11'), 'mac-camera')
+        self.assertEqual(self.w.session_camera('me', '2026-09-09'), 'phone')
+        self.assertIsNone(self.w.session_camera('me', '2026-09-20'))
+
+    def test_baselines_are_per_camera(self):
+        self.cam_session('2026-09-10', 'Studio Display Camera', 173.3)
+        self.cam_session('2026-09-11', 'FaceTime HD Camera', 140.0)
+        b = self.w.baselines_by_camera('me')
+        self.assertEqual(b['Studio Display Camera']['luma'], 173.3)
+        self.assertEqual(b['FaceTime HD Camera']['luma'], 140.0)
+        self.assertEqual(self.w.baseline_luma('me', 'mac-camera', 'FaceTime HD Camera'), 140.0)
+        self.assertEqual(self.w.baseline_luma('me', 'mac-camera', 'Studio Display Camera'), 173.3)
+        self.assertEqual(self.w.series_camera('me'), 'FaceTime HD Camera')
+
+    def test_unnamed_old_session_matches_any_mac(self):
+        self.assertTrue(self.w.same_camera('mac-camera', 'Studio Display Camera'))
+        self.assertFalse(self.w.same_camera('phone', 'Studio Display Camera'))
+        self.assertFalse(self.w.same_camera('FaceTime HD Camera', 'Studio Display Camera'))
+
+    def test_tolerance_per_camera(self):
+        with open(os.path.join(self.data, 'settings.json'), 'w') as fh:
+            json.dump({'luma_tol': 5, 'luma_tol_by_camera': {'Studio Display Camera': 10}}, fh)
+        self.assertEqual(self.w.luma_tol('Studio Display Camera'), 10.0)
+        self.assertEqual(self.w.luma_tol('FaceTime HD Camera'), 5.0)
+        self.assertEqual(self.w.luma_tol(), 5.0)
+        self.assertEqual(self.w.tolerances()['by_camera']['Studio Display Camera'], 10)
+
+    def test_result_uses_the_cameras_own_tolerance(self):
+        with open(os.path.join(self.data, 'settings.json'), 'w') as fh:
+            json.dump({'luma_tol_by_camera': {'Studio Display Camera': 10}}, fh)
+        self.cam_session('2026-09-10', 'Studio Display Camera', 173.3)
+        self.w.do_capture({'person': 'me', 'date': '2026-09-13', 'batch': '20260913-101500', 'index': 1,
+                           'image': data_url(), 'settings': {'camera': 'Studio Display Camera'}})
+        with open(os.path.join(self.w.results_dir('me'), '2026-09-13_summary.json'), 'w') as fh:
+            json.dump({'mean': 39.5, 'n': 10, 'luma': 180.4}, fh)
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertEqual(r['luma_delta'], 7.1)
+        self.assertTrue(r['luma_ok'], '+7.1 passes this camera\'s tolerance of 10')
+
+    def test_a_different_mac_camera_fails_the_camera_condition_after_anchor(self):
+        self.cam_session('2026-09-10', 'Studio Display Camera', 173.3)
+        with open(os.path.join(self.w.results_dir('me'), 'anchors.csv'), 'w') as fh:
+            fh.write('anchor,date,note\nB,2026-09-10,x\n')
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13', 'flags': [], 'source': 'mac-camera',
+                             'camera': 'FaceTime HD Camera'})
+        d = self.w.read_checklist('me', '2026-09-13')
+        self.assertFalse(d['answers']['camera'])
+        self.assertIn('FaceTime HD camera, not Studio Display camera', d['failed'][0])
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-14', 'flags': [], 'source': 'mac-camera',
+                             'camera': 'Studio Display Camera'})
+        self.assertTrue(self.w.read_checklist('me', '2026-09-14')['valid'])
+
+    def test_tracker_names_each_camera(self):
+        self.cam_session('2026-09-10', 'Studio Display Camera', 173.3)
+        self.cam_session('2026-09-11', 'FaceTime HD Camera', 140.0)
+        with open(self.w.build_chart('me')) as fh:
+            page = fh.read()
+        self.assertIn('<td class="d">2026-09-10</td><td>Studio Display</td>', page)
+        self.assertIn('<td class="d">2026-09-11</td><td>FaceTime HD</td>', page)
+        self.assertIn('Two cameras in the mix', page)
+
+
 class TestBaselinePerCamera(WebTestCase):
     """The exposure baseline is the first logged session's face brightness.
     That number only means something against the same camera, so a session

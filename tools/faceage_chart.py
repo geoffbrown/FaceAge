@@ -22,6 +22,22 @@ PROFILE  = os.path.join(os.path.dirname(RESULTS), 'profile.json')
 STUDY_DAYS = 182            # the pre-registered six-month window
 
 LUMA_TOL = float(os.environ.get('FACEAGE_LUMA_TOL') or 5.0)   # set with `faceage tolerance`
+try:
+    _TOL_BY_CAM = json.loads(os.environ.get('FACEAGE_LUMA_TOL_BY_CAMERA') or '{}')
+except ValueError:
+    _TOL_BY_CAM = {}
+
+
+def tol_for(camera):
+    """The tolerance for a camera named the short way ('Studio Display')."""
+    for k, v in _TOL_BY_CAM.items():
+        ks = k[:-7].strip() if k.lower().endswith(' camera') else k
+        if ks == camera or k == camera:
+            try:
+                return float(v) or LUMA_TOL
+            except (TypeError, ValueError):
+                pass
+    return LUMA_TOL
 W, H     = 760, 210     # chart geometry
 PAD_L, PAD_R, PAD_T, PAD_B = 54, 18, 14, 30
 
@@ -132,10 +148,15 @@ def camera_of(label, image_dir=None):
         if os.path.exists(p):
             try:
                 with open(p) as fh:
-                    src = json.load(fh).get('source')
+                    m = json.load(fh)
+                src = m.get('source')
+                label = (m.get('settings') or {}).get('camera')
             except (OSError, ValueError):
-                src = None
-            return 'Mac' if src == 'mac-camera' else 'Mac?'
+                src, label = None, None
+            if src == 'mac-camera':
+                import re as _re
+                return _re.sub(r'\s*camera$', '', label, flags=_re.I) if label else 'Mac'
+            return 'Mac?'
         if os.path.isdir(d):
             return 'Phone'
     return ''
@@ -175,9 +196,21 @@ def camera_baselines(rows):
     return base
 
 
-MARK = {'Mac': 'circle', 'Phone': 'triangle', 'Mac?': 'circle', '': 'circle'}
-SERIES = {'Mac': 'var(--series-1)', 'Phone': 'var(--series-2)',
-          'Mac?': 'var(--series-1)', '': 'var(--series-1)'}
+MARK = {'Phone': 'triangle'}
+SERIES = {'Phone': 'var(--series-2)'}
+_SLOTS = ['var(--series-1)', 'var(--series-3)', 'var(--series-4)']
+
+
+def assign_cameras(rows):
+    """Every Mac camera seen gets a circle and the next categorical hue, in
+    order of first appearance; the phone keeps its triangle."""
+    i = 0
+    for r in rows:
+        c = r.get('camera') or ''
+        if c and c not in SERIES:
+            MARK[c] = 'circle'
+            SERIES[c] = _SLOTS[min(i, len(_SLOTS) - 1)]
+            i += 1
 
 
 def mark(x, y, kind, fill, hollow=False, extra=''):
@@ -401,19 +434,21 @@ def main():
     if fit:
         fit['ref'] = series[0]['date']
     latest = rows[-1]
+    assign_cameras(rows + excluded)
     bday = birthday()
     base_by_cam = camera_baselines(rows)
     for r in rows + excluded:
         b = base_by_cam.get(r.get('camera') or '')
         r['_base'] = b
         r['_suspect'] = (b is not None and r.get('luma') is not None
-                         and abs(r['luma'] - b) > LUMA_TOL)
+                         and abs(r['luma'] - b) > tol_for(r.get('camera') or ''))
     cams_series = sorted({r['camera'] for r in series if r.get('camera')})
     cams_all = sorted({r['camera'] for r in rows + excluded if r.get('camera')})
     tone, head, para = status(series, trend, sig, cams_series, anchors)
 
     # ---- hero ----
-    cam_word = {'Mac': 'this Mac’s camera', 'Phone': 'phone photos'}.get(latest.get('camera') or '', '')
+    cam_label = latest.get('camera') or ''
+    cam_word = 'phone photos' if cam_label == 'Phone' else (cam_label + ' camera' if cam_label else '')
     hero_sub = '%s%s · %d photos' % (latest['date'].strftime('%-d %b %Y'),
                                           (' · ' + cam_word) if cam_word else '', latest['n'])
     gap_html = ''
@@ -589,7 +624,7 @@ PAGE = r"""<!doctype html>
 .viz-root{
   --surface-1:#f7f6f2; --surface-2:#ffffff; --border:#e6e4de;
   --text-primary:#111110; --text-secondary:#52514e; --text-muted:#7c7a73;
-  --series-1:#2a78d6; --series-2:#eb6834; --grid:#edebe6;
+  --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; --series-4:#eda100; --grid:#edebe6;
   --band:rgba(12,163,12,.10); --good:#0ca30c; --good-bg:#e9f6e9; --warn:#b47600; --warn-bg:#fff4d6;
   --crit:#d03b3b; --crit-bg:#fdecec; --accent:#2a78d6; --accent-ink:#fff;
   --shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px -18px rgba(0,0,0,.18);
@@ -597,14 +632,14 @@ PAGE = r"""<!doctype html>
 @media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])) .viz-root{
   --surface-1:#161615; --surface-2:#1f1f1e; --border:#33322f;
   --text-primary:#fff; --text-secondary:#c3c2b7; --text-muted:#8e8c83;
-  --series-1:#3987e5; --series-2:#d95926; --grid:#2b2a28;
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500; --grid:#2b2a28;
   --band:rgba(12,163,12,.16); --good:#4fc26a; --good-bg:#173321; --warn:#e6b64a; --warn-bg:#3a2f12;
   --crit:#f06767; --crit-bg:#3b1c1c; --accent:#4c8df5; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
 }}
 :root[data-theme="dark"] .viz-root{
   --surface-1:#161615; --surface-2:#1f1f1e; --border:#33322f;
   --text-primary:#fff; --text-secondary:#c3c2b7; --text-muted:#8e8c83;
-  --series-1:#3987e5; --series-2:#d95926; --grid:#2b2a28;
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500; --grid:#2b2a28;
   --band:rgba(12,163,12,.16); --good:#4fc26a; --good-bg:#173321; --warn:#e6b64a; --warn-bg:#3a2f12;
   --crit:#f06767; --crit-bg:#3b1c1c; --accent:#4c8df5; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px -12px rgba(0,0,0,.6);
 }
