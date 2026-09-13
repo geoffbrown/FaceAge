@@ -380,6 +380,13 @@ is the next step."
     ${b[@]+"${b[@]}"} "${@:2}"
 }
 
+# Two or more sittings side by side, frame by frame: what actually differed?
+cmd_compare() {
+  [[ $# -ge 2 ]] || die "usage: faceage compare DATE1 DATE2 [DATE3 ...]"
+  python3 "$REPO/tools/faceage_compare.py" --results "$RESULTS_DIR" \
+    --sessions-dir "$SESSIONS_DIR" "$@"
+}
+
 cmd_app() {
   info "Starting the local UI. Nothing leaves this machine."
   FACEAGE_DATA="$DATA" FACEAGE_REPO="$REPO" \
@@ -635,6 +642,7 @@ case "$sub" in
   invalidate) cmd_invalidate "$@" ;;
   anchor)   cmd_anchor "$@" ;;
   preflight) cmd_preflight "$@" ;;
+  compare)  cmd_compare "$@" ;;
   app)      cmd_app "$@" ;;
   subjects) cmd_subjects ;;
   reset)    cmd_reset "$@" ;;
@@ -652,6 +660,8 @@ FaceAge — local scoring pipeline
   faceage run FILE...        stage those photos into today's session and score
   faceage app                open the local web UI (import, check, score, chart)
   faceage preflight [DATE]   what is wrong with the capture, and what to do
+  faceage compare D1 D2...   two sittings side by side, photo by photo: face
+                             size, brightness, confidence, FaceAge
   faceage chart              build + open the visual tracker dashboard
   faceage history            print the longitudinal series
 
