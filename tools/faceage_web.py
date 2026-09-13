@@ -252,6 +252,28 @@ def baseline_luma(name, source=None):
 HOME = os.path.expanduser('~')
 
 
+def settings():
+    p = os.path.join(DATA, 'settings.json')
+    try:
+        with open(p) as fh:
+            return json.load(fh) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def luma_tol():
+    """The brightness tolerance every session is held to. 5 unless
+    `faceage tolerance` has set another with a reason on record."""
+    try:
+        v = float(settings().get('luma_tol') or 0)
+    except (TypeError, ValueError):
+        v = 0
+    v = v or 5.0
+    os.environ['FACEAGE_LUMA_TOL'] = str(v)      # the chart and pre-flight read it from here
+    pf.LUMA_TOL = v
+    return v
+
+
 def safe_dir(path):
     """Resolve a browse path, refusing anything outside the user's own files.
 
@@ -394,7 +416,7 @@ def session_result(name, date):
            'fellback': bool(d.get('fellback_to_flagged'))}
     if luma is not None and base is not None:
         out['luma_delta'] = round(luma - base, 1)
-        out['luma_ok'] = abs(luma - base) <= 5.0
+        out['luma_ok'] = abs(luma - base) <= luma_tol()
     cl = read_checklist(name, date)
     out['valid'] = bool(cl is None or cl.get('valid', True))
     out['excluded_reason'] = None if out['valid'] else '; '.join(cl.get('failed') or [])
@@ -1348,6 +1370,7 @@ def do_preflight(person, date):
                        'scored (%s), so the last pre-flight describes a '
                        'different set. Score again to refresh it.'
                        % ', '.join(bits)}
+    luma_tol()
     findings = pf.diagnose(images, baseline_luma(person, session_source(person, date)))
     return {'available': True, 'n_frames': len(images),
             'verdict': pf.verdict(findings),
@@ -1422,6 +1445,7 @@ def do_notes(body):
 
 
 def build_chart(person):
+    luma_tol()
     out = subprocess.run([sys.executable, os.path.join(HERE, 'faceage_chart.py')],
                          capture_output=True, text=True,
                          env=dict(os.environ,
@@ -1474,6 +1498,7 @@ def state(person=None, date=None, browse=None):
                   'baseline_camera': baseline_info(person, 'mac-camera'),
                   'fill_calibration': fill_calibration(person),
                   'luma_calibration': luma_calibration(person),
+                  'luma_tol': luma_tol(),
                   'preflight': do_preflight(person, date)})
     return s
 
@@ -2047,8 +2072,9 @@ function liveBase(){
   /* Best: the analysis baseline itself, translated into what this readout
      should say, once the offset between the two has been learned. Then the
      gate is the same test the analysis will apply, with a point of margin. */
-  if(b.luma!=null && c && c.offset!=null) return {value:b.luma - c.offset, tol:5, live:true, exact:true};
-  if(b.live_luma!=null && b.live_method === LUMA_METHOD) return {value:b.live_luma, tol:TARGET.lumaTol, live:true};
+  var tol = S.luma_tol || 5;
+  if(b.luma!=null && c && c.offset!=null) return {value:b.luma - c.offset, tol:tol, live:true, exact:true};
+  if(b.live_luma!=null && b.live_method === LUMA_METHOD) return {value:b.live_luma, tol:Math.min(tol, TARGET.lumaTol), live:true};
   return null;                       // a differently measured number is not a baseline for this readout
 }
 function baselineLine(){

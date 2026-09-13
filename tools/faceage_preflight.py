@@ -28,7 +28,7 @@ import argparse
 
 # The capture standard's tolerance. README: "Keep it within roughly +/-5 of
 # prior sessions. If it drifts, treat that session's change as suspect."
-LUMA_TOL = 5.0
+LUMA_TOL = float(os.environ.get('FACEAGE_LUMA_TOL') or 5.0)   # set with `faceage tolerance`
 LUMA_WARN = 2.5           # early warning, before it becomes a reshoot
 LUMA_SPREAD_TOL = 5.0     # variation WITHIN one session
 MIN_FACE_FILL = 0.80      # authors' Supplement Table 1, as linear frame height

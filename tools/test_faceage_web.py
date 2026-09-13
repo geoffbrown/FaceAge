@@ -1393,6 +1393,50 @@ class TestLumaCalibration(WebTestCase):
         self.assertIsNone(self.w.luma_calibration('me'))
 
 
+class TestTolerance(WebTestCase):
+    """One brightness tolerance, read from the data folder's settings, applied
+    by the result, the pre-flight and the tracker alike."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+        os.environ.pop('FACEAGE_LUMA_TOL', None)
+
+    def tearDown(self):
+        os.environ.pop('FACEAGE_LUMA_TOL', None)
+        WebTestCase.tearDown(self)
+
+    def test_default_is_five(self):
+        self.assertEqual(self.w.luma_tol(), 5.0)
+        self.assertEqual(self.w.pf.LUMA_TOL, 5.0)
+
+    def test_setting_applies_everywhere(self):
+        with open(os.path.join(self.data, 'settings.json'), 'w') as fh:
+            json.dump({'luma_tol': 8, 'luma_tol_reason': 'sensitivity test'}, fh)
+        self.assertEqual(self.w.luma_tol(), 8.0)
+        self.assertEqual(self.w.pf.LUMA_TOL, 8.0)
+        self.assertEqual(os.environ['FACEAGE_LUMA_TOL'], '8.0')
+        self.assertEqual(self.w.state('me', '2026-09-13')['luma_tol'], 8.0)
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-12', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-12', luma=121.3)
+        self.w.do_import({'person': 'me', 'date': '2026-09-13', 'files': ['IMG_1.jpg']}) if False else None
+        with open(self.w.build_chart('me')) as fh:
+            self.assertIn('within 8 of the first session', fh.read())
+
+    def test_result_uses_it(self):
+        with open(os.path.join(self.data, 'settings.json'), 'w') as fh:
+            json.dump({'luma_tol': 8}, fh)
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-12', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-12', luma=173.3)
+        self.w.do_import({'person': 'me', 'date': '2026-09-13', 'files': ['IMG_1.jpg']})
+        with open(os.path.join(self.w.results_dir('me'), '2026-09-13_summary.json'), 'w') as fh:
+            json.dump({'mean': 40.2, 'n': 10, 'luma': 179.9}, fh)
+        r = self.w.session_result('me', '2026-09-13')
+        self.assertTrue(r['luma_ok'], '+6.6 is inside a tolerance of 8')
+
+
 class TestBaselinePerCamera(WebTestCase):
     """The exposure baseline is the first logged session's face brightness.
     That number only means something against the same camera, so a session
