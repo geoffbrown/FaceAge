@@ -2455,6 +2455,26 @@ function cardAnalyse(){
   return o.join('');
 }
 
+/* The scoring tool talks like a command line. Translate what a person needs
+   and drop the rest; the raw text stays reachable through the folder. */
+function friendlyLog(lines){
+  var out = [];
+  (lines || []).forEach(function(l){
+    var t = String(l).trim();
+    if(!t) return;
+    if(/^--no-log/.test(t)) return;                              // the card already says nothing is added
+    var m;
+    if((m = t.match(/^Scoring (\d+) photo/))) t = 'Scoring '+m[1]+' photos';
+    else if(/docker|colima/i.test(t) && /start|pull|creat/i.test(t)) t = 'Waking up the model (Docker)';
+    else if((m = t.match(/^\((\d+)\/(\d+)\) Running the face localization/i))) t = 'Finding the face in photo '+m[1]+' of '+m[2];
+    else if((m = t.match(/^\((\d+)\/(\d+)\) Running the age estimation/i))) t = 'Estimating age for photo '+m[1]+' of '+m[2];
+    if(out[out.length-1] !== t) out.push(t);
+  });
+  return out;
+}
+function phaseWord(pr){
+  return pr.phase || 'Waking up the model';
+}
 function cardProgress(){
   var j = S.job, pr = (j && j.progress) || {};
   var pct = pr.total ? pr.pct : null;
@@ -2462,12 +2482,13 @@ function cardProgress(){
            '<p class="lead">Finding the face in each photo, then estimating age.</p>',
            '<div class="prog"><div class="bar"><div id="pfill" class="fill'+(pct===null?' indet':'')+
            '" style="width:'+(pct===null?100:pct)+'%"></div></div>',
-           '<div class="progmeta"><b id="pphase">'+h(pr.phase||'Starting')+'</b>'+
+           '<div class="progmeta"><b id="pphase">'+h(phaseWord(pr))+'</b>'+
            '<span id="pcount">'+(pr.total?(pr.done+' of '+pr.total):'')+'</span>'+
            '<span id="peta">'+(j.eta!=null?('· about '+fmtSecs(j.eta)+' left'):'')+'</span>'+
            '<span class="pct" id="ppct">'+(pct===null?'':Math.round(pct)+'%')+'</span></div></div>',
+           '<p class="hint" id="phint">'+(pr.total ? '' : 'The first run after a restart can take a minute while Docker wakes the model.')+'</p>',
            '<details id="logdet"'+(ui.logOpen?' open':'')+'><summary>Details</summary>'+
-           '<pre class="log" id="plog">'+h(j.log.join('\n'))+'</pre></details></div>'];
+           '<pre class="log" id="plog">'+h(friendlyLog(j.log).join('\n'))+'</pre></details></div>'];
   return o.join('');
 }
 
@@ -2478,11 +2499,12 @@ function updateProgress(j){
   var f = document.getElementById('pfill'); if(!f) return false;
   if(pct===null){ f.className='fill indet'; f.style.width='100%'; }
   else { f.className='fill'; f.style.width=pct+'%'; }
-  document.getElementById('pphase').textContent = pr.phase||'Starting';
+  document.getElementById('pphase').textContent = phaseWord(pr);
+  var ph = document.getElementById('phint'); if(ph) ph.textContent = pr.total ? '' : 'The first run after a restart can take a minute while Docker wakes the model.';
   document.getElementById('pcount').textContent = pr.total?(pr.done+' of '+pr.total):'';
   document.getElementById('peta').textContent = j.eta!=null?('· about '+fmtSecs(j.eta)+' left'):'';
   document.getElementById('ppct').textContent = pct===null?'':Math.round(pct)+'%';
-  var l = document.getElementById('plog'); if(l) l.textContent = j.log.join('\n');
+  var l = document.getElementById('plog'); if(l) l.textContent = friendlyLog(j.log).join('\n');
   return true;
 }
 
