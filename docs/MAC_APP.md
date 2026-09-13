@@ -59,6 +59,12 @@ names explain themselves on hover. The slope, its interval, the formal verdict a
 brightness chart live under "The numbers behind this". The camera per session comes from
 `capture.json`; brightness is compared within a camera only.
 
+Discarding a session (start over, shoot again) moves its photos, checklist and result to the
+macOS Trash as one folder named for the person and date, where Finder can put it back; the
+discard stays logged in `discarded.csv`. Nothing is archived inside the data folder any more.
+`faceage tidy` moves anything earlier versions archived there to the Trash; `--all` also moves
+session folders that were shot but never added to a tracker.
+
 Deleting is real there: a row's Delete, or Edit and a selection, removes the tracker row
 and the photos, results and checklist from disk after a confirmation, and leaves one line in
 `deleted.csv`. The app's done card keeps the softer "remove from the tracker" that leaves

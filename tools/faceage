@@ -200,9 +200,8 @@ Create it and add photos, or pass them directly:  faceage run /path/to/*.jpg"
     if [[ -d "$session_dir" ]] && [[ -n "$(find "$session_dir" "${find_images[@]}" -print -quit 2>/dev/null)" ]]; then
       [[ "$replace" -eq 1 ]] || die "session $session already contains photos for subject '$SUBJECT'.
 Re-run with --replace to archive them and use this set instead."
-      local archived="$SESSIONS_DIR/${session}_replaced_$(date +%H%M%S)"
-      mv "$session_dir" "$archived"
-      info "Archived previous photos to $archived"
+      trash_path "$session_dir" "FaceAge $SUBJECT $session (replaced $(date +%H%M%S))"
+      info "Previous photos moved to the Trash"
     fi
     mkdir -p "$session_dir"
     cp "${inputs[@]}" "$session_dir"/ || die "could not copy photos into $session_dir"
@@ -387,6 +386,57 @@ cmd_analysis() {
   python3 "$REPO/tools/faceage_analysis.py" --results "$RESULTS_DIR" "$@"
 }
 
+# Move a folder to the Trash (Finder, so Put Back works), under a readable name.
+trash_path() {
+  local src="$1" name="${2:-$(basename "$1")}" staged
+  staged="$(dirname "$src")/$name"
+  [[ "$staged" == "$src" ]] || mv "$src" "$staged"
+  if [[ -n "${FACEAGE_TRASH:-}" ]]; then
+    mkdir -p "$FACEAGE_TRASH" && mv "$staged" "$FACEAGE_TRASH/" && return 0
+  fi
+  if [[ "$(uname)" == "Darwin" ]] && osascript -e "tell application \"Finder\" to delete POSIX file \"$staged\"" >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$HOME/.Trash" 2>/dev/null && mv "$staged" "$HOME/.Trash/" && return 0
+  die "could not move $staged to the Trash"
+}
+
+cmd_tidy() {
+  # Move everything the app or the CLI archived inside the data folder to the
+  # Trash: discarded/ bundles and *_replaced_* session folders. With --all,
+  # also session folders that are not in anyone's tracker (photos that were
+  # shot, maybe scored, and never added). Logs and trackers are untouched.
+  local all=0; [[ "${1:-}" == "--all" ]] && all=1
+  local base="$DATA/subjects" n=0
+  [[ -d "$base" ]] || { info "nothing to tidy"; return 0; }
+  for subj in "$base"/*/; do
+    [[ -d "$subj" ]] || continue
+    local who; who="$(basename "$subj")"
+    for d in "$subj"discarded/*/; do
+      [[ -d "$d" ]] || continue
+      trash_path "${d%/}" "FaceAge $who $(basename "$d") (discarded)"; n=$((n+1))
+    done
+    [[ -d "$subj/discarded" ]] && rmdir "$subj/discarded" 2>/dev/null
+    for d in "$subj"sessions/*_replaced_*/; do
+      [[ -d "$d" ]] || continue
+      trash_path "${d%/}" "FaceAge $who $(basename "$d")"; n=$((n+1))
+    done
+    if [[ "$all" -eq 1 ]]; then
+      local hist="$subj/results/faceage_history.csv"
+      for d in "$subj"sessions/*/; do
+        [[ -d "$d" ]] || continue
+        local label; label="$(basename "$d")"
+        [[ "$label" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[b-z]?$ ]] || continue
+        if [[ -f "$hist" ]] && grep -q "^$label," "$hist"; then continue; fi
+        trash_path "${d%/}" "FaceAge $who $label (not in tracker)"; n=$((n+1))
+        rm -f "$subj/results/${label}_summary.json" "$subj/results/${label}_per_image.csv" "$subj/results/checklists/${label}.json"
+      done
+    fi
+  done
+  info "moved $n folder(s) to the Trash"
+  [[ "$all" -eq 1 ]] || info "sessions that were shot but never added to a tracker are kept; 'faceage tidy --all' moves those too"
+}
+
 cmd_reset() {
   # Start fresh. Nothing is deleted: the whole data folder is moved aside with
   # a timestamp, so it can be looked at or restored later.
@@ -461,6 +511,7 @@ case "$sub" in
   app)      cmd_app "$@" ;;
   subjects) cmd_subjects ;;
   reset)    cmd_reset "$@" ;;
+  tidy)     cmd_tidy "$@" ;;
   build)    cmd_build ;;
   doctor)   cmd_doctor ;;
   *) cat <<USAGE
@@ -483,6 +534,8 @@ FaceAge — local scoring pipeline
   faceage anchor B|R DATE    set the baseline / retest landmark
   faceage anchor             show the anchors currently set
   faceage subjects           list everyone with data on this machine
+  faceage tidy [--all]       move discarded and replaced sessions to the Trash
+                             (--all: also sessions never added to a tracker)
   faceage reset              start fresh: move ALL data aside (nothing deleted)
   faceage validate [tol]     re-run validation against the authors' CSV
   faceage build              (re)build the linux/amd64 container image
