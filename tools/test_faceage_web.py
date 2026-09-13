@@ -23,8 +23,10 @@ class WebTestCase(unittest.TestCase):
     def setUp(self):
         self.data = tempfile.mkdtemp()
         self.inbox = tempfile.mkdtemp()
+        self.trash = tempfile.mkdtemp()
         os.environ['FACEAGE_DATA'] = self.data
         os.environ['FACEAGE_INBOX'] = self.inbox
+        os.environ['FACEAGE_TRASH'] = self.trash        # never the real Trash from a test
         for mod in ('faceage_web',):
             sys.modules.pop(mod, None)
         import faceage_web
@@ -35,6 +37,8 @@ class WebTestCase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.data, ignore_errors=True)
         shutil.rmtree(self.inbox, ignore_errors=True)
+        shutil.rmtree(self.trash, ignore_errors=True)
+        os.environ.pop('FACEAGE_TRASH', None)
 
     def person(self, name='me'):
         self.w.do_create_person({'name': name})
@@ -1519,13 +1523,19 @@ class TestDiscard(WebTestCase):
         with open(vfile) as fh:
             self.assertEqual(list(csv.DictReader(fh)), [])
 
-    def test_nothing_is_actually_deleted(self):
-        """Photographs are archived, never removed."""
+    def test_it_goes_to_the_trash_as_one_folder(self):
+        """Photographs go to the Trash, where they can be put back, and
+        nothing stays inside the data folder."""
+        trash_dir = self.trash
         r = self.w.do_discard({'person': 'me', 'date': '2026-09-12', 'reason': 'x'})
         bin_dir = r['archived_to']
+        self.assertTrue(bin_dir.startswith(trash_dir), bin_dir)
+        self.assertIn('FaceAge me 2026-09-12 (discarded', os.path.basename(bin_dir))
         self.assertTrue(os.path.isfile(os.path.join(bin_dir, 'photos', 'IMG_1.jpg')))
         self.assertTrue(os.path.isfile(os.path.join(bin_dir, 'checklist.json')))
         self.assertTrue(os.path.isfile(os.path.join(bin_dir, '2026-09-12_summary.json')))
+        self.assertFalse(os.path.exists(os.path.join(self.w.subj_dir('me'), 'discarded')))
+        self.assertEqual([d for d in os.listdir(self.w.subj_dir('me')) if 'discarded' in d], [])
 
     def test_the_discard_is_logged_with_its_reason(self):
         self.w.do_discard({'person': 'me', 'date': '2026-09-12',

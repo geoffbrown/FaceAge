@@ -900,6 +900,35 @@ def previous_checklist(name, date):
     return read_checklist(name, earlier[-1])
 
 
+def trash(path):
+    """Move a file or folder to the Trash, where Finder can still put it back.
+
+    On a Mac, Finder does it (so Put Back works); if that fails, a plain move
+    into ~/.Trash. FACEAGE_TRASH overrides the destination (tests, other
+    systems). Nothing here deletes.
+    """
+    dest_root = os.environ.get('FACEAGE_TRASH')
+    if not dest_root and sys.platform == 'darwin':
+        try:
+            subprocess.run(['osascript', '-e',
+                            'tell application "Finder" to delete POSIX file "%s"' % path.replace('"', '\\"')],
+                           check=True, capture_output=True, timeout=20)
+            return 'Trash'
+        except Exception:                                    # noqa: BLE001
+            dest_root = os.path.expanduser('~/.Trash')
+    if not dest_root:
+        dest_root = os.path.expanduser('~/.local/share/Trash/files')
+    os.makedirs(dest_root, exist_ok=True)
+    base = os.path.basename(path.rstrip('/'))
+    target = os.path.join(dest_root, base)
+    n = 1
+    while os.path.exists(target):
+        n += 1
+        target = os.path.join(dest_root, '%s %d' % (base, n))
+    shutil.move(path, target)
+    return target
+
+
 def do_discard(body):
     """Throw a session away completely and start over.
 
@@ -907,9 +936,10 @@ def do_discard(body):
     per-image QA, the checklist, the validity row and the history row all key
     off the session label, not the folder. This removes all of them.
 
-    Photos and records are MOVED to discarded/, never deleted: docs/MAC_APP.md
-    keeps photographs because a weird session needs inspecting later, and the
-    discard itself is logged so the record shows what happened.
+    Photos and records go to the Trash as one folder, so a weird session can
+    still be pulled back for a look, and the discard itself is logged so the
+    record shows what happened. Nothing is kept inside the data folder: that
+    was filling the disk with sessions nobody wanted.
 
     On the §1 question: a rehearsal session is not study data. §4 says these do
     not enter the series at all, and before B is set there is no series for a
@@ -925,7 +955,7 @@ def do_discard(body):
     res = results_dir(name)
     was_scored = session_scored(name, date)
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-    bin_dir = os.path.join(subj_dir(name), 'discarded', '%s_%s' % (date, stamp))
+    bin_dir = os.path.join(subj_dir(name), 'FaceAge %s %s (discarded %s)' % (name, date, stamp))
     os.makedirs(bin_dir, exist_ok=True)
 
     moved = []
@@ -974,8 +1004,9 @@ def do_discard(body):
                                         'yes' if was_scored else 'no',
                                         reason or '(none given)',
                                         os.path.basename(bin_dir)))
+    trashed = trash(bin_dir)
     return {'ok': True, 'session': date, 'was_scored': was_scored,
-            'removed': moved, 'archived_to': bin_dir}
+            'removed': moved, 'archived_to': trashed}
 
 
 def do_remove(body):
@@ -2710,7 +2741,7 @@ function reveal(what){
   api('/api/reveal', {person:S.person, date:S.date, what:what}).catch(fail);
 }
 function shootAgain(){
-  /* Discard this session (moved to discarded/, never deleted) and go straight
+  /* Discard this session (it goes to the Trash as one folder) and go straight
      back to the camera with the same conditions answers, so a retake is one
      click. The discard is logged like any other. */
   api('/api/discard', {person:S.person, date:S.date, reason:'shoot again'})
@@ -2727,7 +2758,7 @@ function removeFromTracker(){
   api('/api/remove', {person:S.person, date:S.date, reason:reason}).then(function(){ load(); }).catch(fail);
 }
 function discard(){
-  var msg = 'Start over? The photos, answers and result for this session move to discarded/ (nothing is deleted).';
+  var msg = 'Start over? The photos, answers and result for this session go to the Trash as one folder.';
   if(!confirm(msg)) return;
   var reason = prompt('Why? (optional — kept with the discarded session)', '') || '';
   api('/api/discard', {person:S.person, date:S.date, reason:reason})
