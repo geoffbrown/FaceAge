@@ -158,6 +158,7 @@ def states():
                                                                  {'name': 'jackie', 'sessions': 0, 'logged': 0}]),
          'ui': {'choosing': True},
          'expect': ['Who are we measuring', 'class="people"', '1 in tracker · current', 'Continue</button>',
+                    'type="date" class="bd" data-name="me"', 'compare FaceAge with your real age',
                     "renamePerson('jackie')", "pickPerson('jackie')", 'Choose</button>',
                     'class="pillbtn" onclick="changePerson()">Change'],
          'reject': ['<select', 'rename</button>']},

@@ -18,6 +18,8 @@ VALIDITY = os.path.join(RESULTS, 'session_validity.csv')
 ANCHORS  = os.path.join(RESULTS, 'anchors.csv')
 NOTES    = os.path.join(RESULTS, 'session_notes.json')
 OUT      = os.path.join(RESULTS, 'tracker.html')
+PROFILE  = os.path.join(os.path.dirname(RESULTS), 'profile.json')
+STUDY_DAYS = 182            # the pre-registered six-month window
 
 LUMA_TOL = 5.0          # exposure drift beyond this makes a session suspect
 W, H     = 760, 210     # chart geometry
@@ -139,6 +141,19 @@ def camera_of(label, image_dir=None):
     return ''
 
 
+def birthday():
+    try:
+        with open(PROFILE) as fh:
+            b = (json.load(fh) or {}).get('birthday')
+        return datetime.date.fromisoformat(b) if b else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def age_on(bday, day):
+    return (day - bday).days / 365.2425 if bday else None
+
+
 def scale(vals, pad_frac=0.2):
     if not vals:
         return 0.0, 1.0
@@ -174,7 +189,7 @@ def mark(x, y, kind, fill, hollow=False, extra=''):
     return '<circle class="dot%s" cx="%.1f" cy="%.1f" r="5.5" style="%s"/>' % (extra, x, y, style)
 
 
-def plot(rows, pre_b, fit, anchors, W=760, H=250):
+def plot(rows, pre_b, fit, anchors, W=760, H=250, domain=None, bday=None):
     """The one chart: FaceAge per session over time.
 
     One measure, so one axis. Camera is carried by shape and hue (legend in the
@@ -192,6 +207,23 @@ def plot(rows, pre_b, fit, anchors, W=760, H=250):
     if fit:
         x0, x1 = int(fit['x0']), int(fit['x1'])
         vals += [fit['fn'](x0)[0], fit['fn'](x1)[0]]      # the line, not its ribbon
+    d0, d1 = pts[0]['date'], pts[-1]['date']
+    for a in (anchors or {}).values():
+        d0, d1 = min(d0, a), max(d1, a)
+    if domain:
+        d0, d1 = domain
+        pts = [r for r in pts if d0 <= r['date'] <= d1]
+        if not pts:
+            return '<p class="empty">No sessions in this window.</p>'
+        vals = []
+        for r in pts:
+            vals += [r['mean'] - r['se'], r['mean'] + r['se']]
+    elif d0 == d1:                           # one session: centre it, a week either side
+        d0, d1 = d0 - datetime.timedelta(days=7), d1 + datetime.timedelta(days=7)
+    if bday:                                 # the real-age line should be in view when close
+        a0, a1 = age_on(bday, d0), age_on(bday, d1)
+        if min(vals) - 6 < a1 and max(vals) + 6 > a0:
+            vals += [a0, a1]
     ymin, ymax = scale(vals)
     if ymax - ymin < 4:                      # never let a flat week look dramatic
         mid = (ymax + ymin) / 2
@@ -200,11 +232,6 @@ def plot(rows, pre_b, fit, anchors, W=760, H=250):
     step = 1 if (ymax - ymin) <= 7 else (2 if (ymax - ymin) <= 14 else 5)
     ticks = [v for v in range(int(math.floor(ymin)), int(math.ceil(ymax)) + 1) if v % step == 0 and ymin <= v <= ymax]
 
-    d0, d1 = pts[0]['date'], pts[-1]['date']
-    for a in (anchors or {}).values():
-        d0, d1 = min(d0, a), max(d1, a)
-    if d0 == d1:                             # one session: centre it, a week either side
-        d0, d1 = d0 - datetime.timedelta(days=7), d1 + datetime.timedelta(days=7)
     span = max((d1 - d0).days, 1)
     pre_labels = {r['label'] for r in pre_b}
 
@@ -220,13 +247,18 @@ def plot(rows, pre_b, fit, anchors, W=760, H=250):
         y = Y(v)
         out.append('<line class="grid" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>' % (PL, y, W - PR, y))
         out.append('<text class="ylab" x="%.1f" y="%.1f">%d</text>' % (PL - 8, y + 3.5, v))
-    idxs = {0, len(pts) - 1}
-    if len(pts) > 4:
-        idxs.add(len(pts) // 2)
-    for i in sorted(idxs):
-        r = pts[i]
+    # x labels: the window's ends and its middle, so an empty future still reads
+    for d, anc in ((d0, 'start'), (d0 + datetime.timedelta(days=span // 2), 'middle'), (d1, 'end')):
         out.append('<text class="xlab" x="%.1f" y="%.1f">%s</text>'
-                   % (X(r['date']), H - 9, r['date'].strftime('%-d %b')))
+                   % (X(d), H - 9, d.strftime('%-d %b' if d0.year == d1.year else '%-d %b %y')))
+    today = datetime.date.today()
+    if d0 < today < d1:
+        out.append('<line class="today" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>' % (X(today), PT, X(today), H - PB))
+    if bday:
+        y0, y1 = Y(age_on(bday, d0)), Y(age_on(bday, d1))
+        out.append('<line class="agelin" clip-path="url(#plotclip)" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>' % (PL, y0, W - PR, y1))
+        if PT <= y1 <= H - PB:
+            out.append('<text class="agelab" x="%.1f" y="%.1f">your age</text>' % (W - PR, y1 - 5))
 
     if fit:
         x0, x1 = int(fit['x0']), int(fit['x1'])
@@ -349,6 +381,7 @@ HELP = {
     'flagged': 'Photos the analysis had a doubt about: face too small in the frame, low confidence, or clipped at an edge.',
     'time': 'When the analysis ran, in local time.',
     'camera': 'Which camera took the photos. Only sessions from the same camera can be compared.',
+    'setup': 'Clean means the brightness on your face matched your first session on this camera and every photo passed. The model reacts to light and framing as much as to your face.',
 }
 
 
@@ -368,6 +401,7 @@ def main():
     if fit:
         fit['ref'] = series[0]['date']
     latest = rows[-1]
+    bday = birthday()
     base_by_cam = camera_baselines(rows)
     for r in rows + excluded:
         b = base_by_cam.get(r.get('camera') or '')
@@ -382,10 +416,23 @@ def main():
     cam_word = {'Mac': 'this Mac’s camera', 'Phone': 'phone photos'}.get(latest.get('camera') or '', '')
     hero_sub = '%s%s · %d photos' % (latest['date'].strftime('%-d %b %Y'),
                                           (' · ' + cam_word) if cam_word else '', latest['n'])
+    gap_html = ''
+    if bday:
+        real = age_on(bday, latest['date'])
+        gap = latest['mean'] - real
+        word = 'younger' if gap < 0 else 'older'
+        gap_html = ('<div class="gap %s"><b>%.1f years %s</b> than your age of %.1f</div>'
+                    % ('good' if gap < 0 else ('warn' if gap > 0 else ''), abs(gap), word, real))
+    else:
+        gap_html = '<div class="gap muted">Add your birthday on the people page to see this against your real age.</div>'
+    if trend.get('ok') and bday:
+        per = trend['slope_per_month']
+        para += (' For scale: the calendar adds 0.08 years a month; over this stretch your FaceAge %s %.2f a month.'
+                 % ('fell' if per < 0 else 'rose', abs(per)))
     hero = ('<section class="card hero"><div class="hero-l"><div class="eyebrow">Your FaceAge, latest session</div>'
-            '<div class="hero-num">%.1f</div><div class="hero-sub">%s</div></div>'
+            '<div class="hero-num">%.1f</div><div class="hero-sub">%s</div>%s</div>'
             '<div class="hero-r"><div class="status %s"><div class="status-h">%s</div><p>%s</p></div></div></section>'
-            % (latest['mean'], html.escape(hero_sub), tone, html.escape(head), html.escape(para)))
+            % (latest['mean'], html.escape(hero_sub), gap_html, tone, html.escape(head), html.escape(para)))
 
     # ---- chart ----
     legend = ''
@@ -399,6 +446,8 @@ def main():
         legend = '<div class="legend">%s</div>' % ''.join(items)
     caption = ('Each point is one session: the average of its photos, with a thin bar for how much '
                'those photos disagreed. ')
+    if bday:
+        caption += 'The grey line is your real age, rising as the calendar does. '
     if fit:
         caption += 'The dashed line is the trend, with the grey ribbon showing how sure it is.'
     elif len(cams_series) > 1:
@@ -407,53 +456,59 @@ def main():
         caption += 'Your first point. The line starts with your next session.'
     else:
         caption += 'A trend line appears once there are three sessions.'
-    chart_card = ('<section class="card"><div class="card-h"><h2>Over time</h2>%s</div>%s'
-                  '<p class="caption">%s</p></section>' % (legend, plot(rows, pre_b, fit, anchors), caption))
+    # ---- ranges: the study window is the default; the empty right side is the future ----
+    today = datetime.date.today()
+    start = anchors.get('B') or rows[0]['date']
+    study_end = max(start + datetime.timedelta(days=STUDY_DAYS), rows[-1]['date'])
+    ranges = [('30d', '30 days', (max(rows[0]['date'], today - datetime.timedelta(days=30)), max(today, rows[-1]['date']))),
+              ('90d', '90 days', (max(rows[0]['date'], today - datetime.timedelta(days=90)), max(today, rows[-1]['date']))),
+              ('study', '6 months', (start, study_end)),
+              ('all', 'All', None)]
+    default = 'study'
+    if bday:
+        legend = legend.replace('</div>', '<span class="lg"><i class="sw agesw"></i>your age</span></div>') if legend             else '<div class="legend"><span class="lg"><i class="sw agesw"></i>your age</span></div>'
+    rng_buttons = ''.join('<button class="rng%s" data-range="%s">%s</button>'
+                          % (' on' if k == default else '', k, html.escape(lab)) for k, lab, _ in ranges)
+    rng_svgs = ''.join('<div class="rview" data-range="%s"%s>%s</div>'
+                       % (k, '' if k == default else ' hidden',
+                          plot(rows, pre_b, fit, anchors, domain=dom, bday=bday))
+                       for k, _, dom in ranges)
+    chart_card = ('<section class="card"><div class="card-h"><h2>Over time</h2><div class="ranges">%s</div>%s</div>%s'
+                  '<p class="caption">%s</p></section>' % (rng_buttons, legend, rng_svgs, caption))
 
-    # ---- consistency ----
-    chips = []
-    for r in rows:
-        light = ('ok' if r['_base'] is None or not r['_suspect'] else 'bad') if r.get('luma') is not None else 'na'
-        light_txt = {'ok': 'light matched', 'bad': 'light off by %.0f' % (abs(r['luma'] - r['_base']) if r['_base'] is not None else 0),
-                     'na': 'light unknown'}[light]
-        if r['_base'] is not None and r['luma'] is not None and abs(r['luma'] - r['_base']) < 0.05:
-            light_txt = 'sets the light baseline'
-        frames = 'ok' if r['flagged'] == 0 else 'bad'
-        frames_txt = 'all photos clean' if r['flagged'] == 0 else '%d photo%s flagged' % (r['flagged'], '' if r['flagged'] == 1 else 's')
-        chips.append('<div class="chip"><div class="chip-d">%s <span class="chip-c">%s</span></div>'
-                     '<div class="chip-k %s">%s %s</div><div class="chip-k %s">%s %s</div></div>'
-                     % (r['date'].strftime('%-d %b'), html.escape(r.get('camera') or ''),
-                        light, '✓' if light == 'ok' else '!', html.escape(light_txt),
-                        frames, '✓' if frames == 'ok' else '!', html.escape(frames_txt)))
     good_n = sum(1 for r in rows if not r['_suspect'] and r['flagged'] == 0)
-    cons = ('<section class="card"><div class="card-h"><h2>Shooting it the same way?</h2>'
-            '<span class="muted">%d of %d sessions clean</span></div>'
-            '<p class="sub">The model reacts to light and framing as much as to your face. '
-            'A session counts as clean when its brightness matched your first session on that camera '
-            'and every photo passed.</p><div class="chips">%s</div></section>'
-            % (good_n, len(rows), ''.join(chips)))
 
     # ---- sessions table ----
+    def setup_pill(r):
+        probs = []
+        if r['_base'] is not None and r['luma'] is not None and r['_suspect']:
+            probs.append('light off by %.0f' % abs(r['luma'] - r['_base']))
+        if r['flagged']:
+            probs.append('%d photo%s flagged' % (r['flagged'], '' if r['flagged'] == 1 else 's'))
+        if probs:
+            return '<span class="setup bad" title="%s">! %s</span>' % (html.escape('; '.join(probs), quote=True), html.escape(', '.join(probs)))
+        first = r['_base'] is not None and r['luma'] is not None and abs(r['luma'] - r['_base']) < 0.05
+        return '<span class="setup ok" title="Brightness matched your first session on this camera and every photo passed">✓ %s</span>' % ('baseline' if first else 'clean')
+
     def row_html(r, exc=False):
         lab = html.escape(r['label'], quote=True)
         cam = html.escape(r.get('camera') or '')
         if exc:
             main_cells = ('<td class="d">%s<span class="tagx">set aside</span></td><td>%s</td><td>%s</td>'
-                          '<td class="r">%.2f</td><td class="r">%s</td><td class="r">%d</td>'
+                          '<td class="r">%.2f</td><td class="r">%s</td><td class="r">%d</td><td>%s</td>'
                           % (html.escape(r['label']), cam, html.escape(r['run_time']), r['mean'],
-                             ('%.2f' % r['median']) if r['median'] is not None else '–', r['n']))
+                             ('%.2f' % r['median']) if r['median'] is not None else '–', r['n'], setup_pill(r)))
         else:
-            main_cells = ('<td class="d">%s%s</td><td>%s</td><td>%s</td><td class="r">%.2f</td>'
-                          '<td class="r">%s</td><td class="r">%d</td>'
-                          % (html.escape(r['label']), '<span class="warn-dot" title="brightness off from this camera’s baseline">!</span>' if r['_suspect'] else '',
-                             cam, html.escape(r['run_time']), r['mean'],
-                             ('%.2f' % r['median']) if r['median'] is not None else '–', r['n']))
+            main_cells = ('<td class="d">%s</td><td>%s</td><td>%s</td><td class="r">%.2f</td>'
+                          '<td class="r">%s</td><td class="r">%d</td><td>%s</td>'
+                          % (html.escape(r['label']), cam, html.escape(r['run_time']), r['mean'],
+                             ('%.2f' % r['median']) if r['median'] is not None else '–', r['n'], setup_pill(r)))
         exp = ('%.0f' % r['luma']) if r['luma'] is not None else '–'
         if r['luma'] is not None and r['_base'] is not None:
             dlt = r['luma'] - r['_base']
             exp += ' <span class="muted">(%s%.0f vs baseline)</span>' % ('+' if dlt > 0 else '', dlt) if abs(dlt) >= 0.5 else ' <span class="muted">(baseline)</span>'
         sd = ('%.2f' % r['std']) if r['std'] else '–'
-        detail = ('<tr class="detail" data-for="%s"><td colspan="8"><div class="dgrid">'
+        detail = ('<tr class="detail" data-for="%s"><td colspan="10"><div class="dgrid">'
                   '<div><div class="dk">%s</div><div class="dv">%s</div></div>'
                   '<div><div class="dk">%s</div><div class="dv">%s</div></div>'
                   '<div><div class="dk">%s</div><div class="dv">%d</div></div>'
@@ -464,23 +519,25 @@ def main():
                      hlp('flagged', 'Flagged photos'), r['flagged'],
                      ('<div><div class="dk">WHY SET ASIDE</div><div class="dv">%s</div></div>' % html.escape(r.get('reason') or '')) if exc else '',
                      lab, html.escape(r['notes'])))
-        return ('<tr class="row%s" data-session="%s"><td class="sel"><input type="checkbox" class="pick" value="%s" aria-label="select %s"></td>'
-                '%s<td class="act"><button class="btn sm fo" data-session="%s">Open folder</button>'
-                '<button class="btn sm del" data-session="%s">Delete</button>'
-                '<button class="btn sm more" aria-label="details">›</button></td></tr>%s'
+        return ('<tr class="row%s" data-session="%s"><td class="chev"><button class="more" aria-label="details">›</button></td>'
+                '<td class="sel"><input type="checkbox" class="pick" value="%s" aria-label="select %s"></td>'
+                '%s<td class="act"><button class="btn sm fo" data-session="%s" title="Show this session\'s photos in Finder">Folder</button>'
+                '<button class="btn sm del" data-session="%s">Delete</button></td></tr>%s'
                 % (' exc' if exc else '', lab, lab, lab, main_cells, lab, lab, detail))
     trows = ''.join(row_html(r) for r in reversed(rows)) + ''.join(row_html(r, True) for r in reversed(excluded))
     table = ('<section class="card sessions" id="sessions"><div class="card-h"><h2>Sessions</h2>'
-             '<button class="btn" id="edit">Edit</button></div>'
+             '<button class="btn" id="edit">Edit</button><span class="sp"></span><span class="muted">%d of %d shot cleanly</span></div>'
+             % (good_n, len(rows)) +
              '<div class="editbar" id="editbar" hidden><label class="sel-all"><input type="checkbox" id="pickall"> select all</label>'
              '<span id="selcount" class="muted">0 selected</span><span class="sp"></span>'
              '<button class="btn danger" id="delsel" disabled>Delete selected</button><button class="btn" id="editdone">Done</button></div>'
-             '<div class="tablewrap"><table><thead><tr><th class="sel"></th><th>Session</th><th>%s</th><th>%s</th>'
-             '<th class="r">%s</th><th class="r">%s</th><th class="r">%s</th><th></th></tr></thead>'
+             '<div class="tablewrap"><table><thead><tr><th class="chev"></th><th class="sel"></th><th>Session</th><th>%s</th><th>%s</th>'
+             '<th class="r">%s</th><th class="r">%s</th><th class="r">%s</th><th>%s</th><th></th></tr></thead>'
              '<tbody>%s</tbody></table></div>'
              '<p class="caption">Click a row for its spread, brightness, flagged photos and notes. '
              'Hover a column name for what it means.</p></section>'
-             % (hlp('camera', 'Camera'), hlp('time', 'Time'), hlp('mean', 'Mean'), hlp('median', 'Median'), hlp('n', 'Photos'), trows))
+             % (hlp('camera', 'Camera'), hlp('time', 'Time'), hlp('mean', 'Mean'), hlp('median', 'Median'), hlp('n', 'Photos'),
+                hlp('setup', 'Setup'), trows))
 
     # ---- the numbers behind this ----
     sci = []
@@ -514,7 +571,7 @@ def main():
 
     page = PAGE.replace('__GEN__', datetime.datetime.now().strftime('%-d %b %Y, %H:%M'))
     page = (page.replace('__HERO__', hero).replace('__CHART__', chart_card)
-                .replace('__CONS__', cons).replace('__TABLE__', table)
+                .replace('__CONS__', '').replace('__TABLE__', table)
                 .replace('__DETAILS__', details).replace('__SUBJ__', html.escape(SUBJECT)))
     with open(OUT, 'w') as fh:
         fh.write(page)
@@ -599,6 +656,17 @@ svg{width:100%;height:auto;display:block;overflow:visible}
 .xlab{fill:var(--text-muted);font-size:10.5px;text-anchor:middle}
 .empty{color:var(--text-secondary);font-size:13px;padding:0 4px 12px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--text-secondary);margin-left:auto}
+.ranges{display:flex;gap:2px;padding:2px;border-radius:9px;background:var(--surface-1);border:1px solid var(--border)}
+.ranges button{font:inherit;font-size:12px;font-weight:600;padding:4px 10px;border:0;border-radius:7px;background:transparent;color:var(--text-secondary);cursor:pointer}
+.ranges button.on{background:var(--surface-2);color:var(--text-primary);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.rview[hidden]{display:none}
+.today{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:1 3}
+.agelin{stroke:var(--text-muted);stroke-width:1.4;opacity:.8}
+.agelab{fill:var(--text-muted);font-size:10px;text-anchor:end;font-weight:600}
+.sw.agesw{border-radius:0;height:2px;width:14px;background:var(--text-muted)}
+.gap{margin-top:10px;font-size:14px;color:var(--text-secondary)}
+.gap.good b{color:var(--good)} .gap.warn b{color:var(--warn)}
+.gap.muted{font-size:12.5px}
 .lg{display:inline-flex;align-items:center;gap:6px}
 .sw{display:inline-block;width:10px;height:10px;background:var(--c,var(--series-1));border-radius:50%}
 .sw.triangle{border-radius:0;clip-path:polygon(50% 0,0 100%,100% 100%)}
@@ -615,14 +683,6 @@ svg{width:100%;height:auto;display:block;overflow:visible}
 @keyframes popse{to{opacity:.45}}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
-/* consistency chips */
-.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
-.chip{padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1);font-size:12.5px}
-.chip-d{font-weight:700;margin-bottom:4px}
-.chip-c{font-weight:500;color:var(--text-muted);margin-left:4px}
-.chip-k{color:var(--text-secondary)}
-.chip-k.ok{color:var(--good)} .chip-k.bad{color:var(--warn)}
-
 /* buttons */
 .btn{font:inherit;font-size:13px;font-weight:600;padding:8px 12px;border-radius:9px;border:1px solid var(--border);
   background:var(--surface-2);color:var(--text-primary);cursor:pointer}
@@ -636,7 +696,7 @@ svg{width:100%;height:auto;display:block;overflow:visible}
 /* sessions */
 .tablewrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
-th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+th,td{text-align:left;padding:10px 6px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap}
 th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);font-weight:600}
 td.r,th.r{text-align:right}
 td.d{font-weight:600;white-space:nowrap}
@@ -653,10 +713,16 @@ tr.detail td{background:var(--surface-1);padding:8px 12px 14px}
 .note{min-height:22px;padding:4px 0;color:var(--text-secondary);cursor:text}
 .note:empty::before{content:'add a note';color:var(--text-muted);font-style:italic}
 .note:focus{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
-td.act{white-space:nowrap;text-align:right}
-td.act .btn{margin-left:4px}
-.more{transition:transform .2s}
+td.act{white-space:nowrap;text-align:right;padding-right:0}
+td.act .btn{margin-left:4px;padding:6px 8px}
+td.chev,th.chev{width:28px;padding-left:4px;padding-right:0}
+.more{all:unset;cursor:pointer;display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:6px;
+  color:var(--text-muted);font-size:16px;transition:transform .2s}
+.more:hover{background:var(--surface-1);color:var(--text-primary)}
 tr.open .more{transform:rotate(90deg)}
+.setup{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
+.setup.ok{background:var(--good-bg);color:var(--good)}
+.setup.bad{background:var(--warn-bg);color:var(--warn)}
 tr.exc td.d{color:var(--text-muted);text-decoration:line-through}
 .tagx{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:6px;font-size:10.5px;font-weight:600;text-decoration:none;
   background:var(--warn-bg);color:var(--warn);text-transform:uppercase;letter-spacing:.04em}
@@ -706,6 +772,19 @@ function bindTips(sel, attr){
 }
 bindTips('.hit', 'data-tip');
 bindTips('.help', 'data-help');
+/* time range: the study window by default; the rest are the same data re-framed */
+document.querySelectorAll('.ranges button').forEach(function(b){
+  b.addEventListener('click', function(){
+    var k = b.getAttribute('data-range');
+    document.querySelectorAll('.ranges button').forEach(function(x){ x.classList.toggle('on', x === b); });
+    document.querySelectorAll('.rview').forEach(function(v){ v.hidden = v.getAttribute('data-range') !== k; });
+    try { localStorage.setItem('faceage.range', k); } catch(e){}
+    setTimeout(tell, 50);
+  });
+});
+try { var savedRange = localStorage.getItem('faceage.range');
+      var rb = savedRange && document.querySelector('.ranges button[data-range="' + savedRange + '"]');
+      if(rb) rb.click(); } catch(e){}
 /* inside the app: tell the frame how tall the page is */
 function tell(){ if(window.parent !== window) window.parent.postMessage({faceage:'height', h:document.body.offsetHeight}, '*'); }
 window.addEventListener('load', tell); window.addEventListener('resize', tell);
