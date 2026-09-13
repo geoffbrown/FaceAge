@@ -1481,7 +1481,7 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .steps span.done::before{background:var(--good)}
 .steps span.now{color:var(--ink)} .steps span.now::before{background:var(--accent)}
 .steps em{font-style:normal;color:var(--line);margin:0 2px}
-.flags{margin:14px 0 4px}
+.flags{margin:0}
 .flags .q{font-size:14px;font-weight:600;margin-bottom:8px}
 .flags .q small{font-weight:500;color:var(--ink3);margin-left:6px}
 .flagrow{display:flex;flex-wrap:wrap;gap:6px}
@@ -1586,11 +1586,16 @@ select{padding-right:32px}
 .modes button{flex:1;padding:12px 14px;text-align:left;border-radius:12px;line-height:1.3}
 .modes button.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--card)}
 .modes small{display:block;font-weight:500;color:var(--ink3);font-size:12.5px;margin-top:2px}
-.camgrid{display:grid;grid-template-columns:minmax(0,400px) minmax(0,1fr);gap:8px 28px;align-items:start}
-.camside{padding-top:2px}
-.camside .camstats{justify-content:flex-start;margin-top:0}
-.camside .flags{margin-top:18px}
-.camside .hint{margin-top:14px}
+.camgrid{display:grid;grid-template-columns:400px minmax(0,1fr);gap:0 28px;align-items:start;margin-top:4px}
+.camcol{display:flex;flex-direction:column;gap:12px}
+.camside{display:flex;flex-direction:column;gap:16px}
+.camside .flags,.camside .hint,.camside .camopts,.camside details.guide{margin:0}
+.camwrap.off{display:flex;align-items:center;justify-content:center;background:var(--bg);border:1px dashed var(--line)}
+.camoff{text-align:center;color:var(--ink3);padding:20px}
+.camoff .camicon{width:44px;height:44px;border-radius:50%;background:var(--line);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--ink3)}
+.camoff p{margin:0 0 14px;font-size:14px}
+.foot-hint{margin-top:18px}
+@media (max-width:760px){.camgrid{grid-template-columns:1fr;gap:16px 0}}
 @media (max-width:760px){.camgrid{grid-template-columns:1fr}.camside .camstats{justify-content:center}}
 .camwrap{position:relative;background:#000;border-radius:14px;overflow:hidden;aspect-ratio:3/4;
   width:min(100%,400px);margin:0 auto;box-shadow:0 0 0 3px transparent;transition:box-shadow .25s}
@@ -1610,16 +1615,17 @@ select{padding-right:32px}
 .camwrap .msg{position:absolute;left:0;right:0;bottom:0;padding:10px 14px;background:rgba(0,0,0,.55);
   color:#fff;font-size:15px;font-weight:600;text-align:center;font-variant-numeric:tabular-nums}
 .camwrap.ok .msg{background:rgba(20,110,55,.8)}
-.camstats{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;font-size:13.5px;color:var(--ink2);
-  font-variant-numeric:tabular-nums;justify-content:center}
+.camstats{display:flex;flex-direction:column;gap:2px;margin:0;font-size:13px;color:var(--ink2);
+  font-variant-numeric:tabular-nums;text-align:center;line-height:1.45}
+.camstats span:empty{display:none}
 .camstats b{color:var(--ink);font-weight:600}
 .camstats .good{color:var(--good)} .camstats .good b{color:var(--good)}
 .camstats .bad{color:var(--bad)} .camstats .bad b{color:var(--bad)}
 .camstats .near{color:var(--warn)} .camstats .near b{color:var(--warn)}
-.camgo{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:14px}
-.camgo button.big{padding:14px 28px;font-size:16px;border-radius:12px}
+.camgo{display:flex;flex-direction:column;gap:8px;margin:0}
+.camgo button.big{width:100%;padding:14px 20px;font-size:16px;border-radius:12px}
 .camstats .dim{color:var(--ink3)}
-.camopts{display:flex;flex-wrap:wrap;gap:6px 20px;margin:10px 0 14px;font-size:13.5px;color:var(--ink2)}
+.camopts{display:flex;flex-wrap:wrap;gap:6px 20px;margin:0;font-size:13.5px;color:var(--ink2)}
 .camopts label{display:flex;align-items:center;gap:6px;cursor:pointer}
 .camopts input{accent-color:var(--accent);width:16px;height:16px}
 
@@ -1714,7 +1720,7 @@ details.notes .note{margin-top:8px}
 'use strict';
 var S = null, sel = {}, ui = {browseDir:null, prefill:null, note:null, logOpen:false,
                              photoMode:'camera', camError:null, tab:'capture', choosing:false,
-                             flags:{}, flagNote:''};
+                             flags:{}, flagNote:'', camWanted:false};
 try { var lp = localStorage.getItem('faceage.person'); if(lp) ui.person = lp; } catch(e){}
 
 /* What might be different today. Anything tapped keeps the session out of the
@@ -1796,7 +1802,7 @@ function stepsHtml(step){
 /* ---- render ---------------------------------------------------------------- */
 function render(){
   var step = stepOf();
-  if(!(ui.tab==='capture' && step===2 && ui.photoMode==='camera')) camStop();
+  if(!(ui.tab==='capture' && step===2 && ui.photoMode==='camera')){ camStop(); ui.camWanted = false; }
   document.getElementById('foot').innerHTML =
     'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>';
   document.getElementById('tabs').innerHTML = S.person
@@ -2042,24 +2048,29 @@ function cardCamera(){
     return o.join('');
   }
   o.push('<div class="camgrid"><div class="camcol">');
-  o.push('<div class="camwrap none" id="camwrap"><video id="cam" autoplay playsinline muted></video><canvas id="camview"></canvas>'+overlaySvg()+
-         '<div class="flash" id="camflash"></div><div class="cd" id="camcd"></div>'+
-         '<div class="msg" id="cammsg">'+(CAM.stream?'Looking for your face…':'Starting the camera…')+'</div></div>');
-  // Start sits right under the frame, where the eye already is
-  o.push('<div class="camgo">'+
-         (S.staged.length ? '<button class="quiet" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>' : '')+
-         '<button class="primary big" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
-         (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button></div>');
+  if(!ui.camWanted){
+    // the camera comes on when asked, not because the page loaded
+    o.push('<div class="camwrap off"><div class="camoff"><div class="camicon">●</div><p>The camera is off</p>'+
+           '<button class="primary big" onclick="camOn()">Turn on camera</button></div></div>');
+  } else {
+    o.push('<div class="camwrap none" id="camwrap"><video id="cam" autoplay playsinline muted></video><canvas id="camview"></canvas>'+overlaySvg()+
+           '<div class="flash" id="camflash"></div><div class="cd" id="camcd"></div>'+
+           '<div class="msg" id="cammsg">'+(CAM.stream?'Looking for your face…':'Starting the camera…')+'</div></div>');
+    o.push('<div class="camgo">'+
+           '<button class="primary big" id="camstart" onclick="startCapture()"'+(CAM.stream?'':' disabled')+'>'+
+           (S.staged.length?'Take '+SHOTS+' more':'Start · '+SHOTS+' photos')+'</button>'+
+           (S.staged.length ? '<button class="big" onclick="goAnalyse()">Continue with '+S.staged.length+'</button>' : '')+'</div>');
+    o.push('<div class="camstats"><span id="camlight"></span><span id="camfill"></span><span id="camres"></span></div>');
+  }
   o.push('</div><div class="camside">');
-  o.push('<div class="camstats"><span id="camlight"></span><span id="camfill"></span><span id="camres"></span></div>');
   o.push(flagsHtml());
   o.push('<p class="hint" id="cambase">'+baselineLine()+'</p>');
   o.push('<div class="camopts"><label><input type="checkbox" id="camauto"'+(CAM.armed?' checked':'')+'> Start automatically when lined up</label>'+
          '<label><input type="checkbox" id="camsound"'+(CAM.muted?'':' checked')+'> Sound</label></div>');
-  o.push('</div></div>');
   o.push(guideHtml(false));
-  o.push('<p class="hint">Photos are saved unmirrored, straight into this session’s folder, as the part of the picture inside the frame above. Keep the Mac in the same place every time; mark it if you can.</p>');
-  o.push('<p class="hint">Have photos from your phone instead? <button class="quiet inline" onclick="setMode(\'import\')">Import them</button>.</p>');
+  o.push('</div></div>');
+  o.push('<p class="hint foot-hint">Photos are saved unmirrored, straight into this session’s folder, as the part of the picture inside the frame. Keep the Mac in the same place every time. '+
+         'Have photos from your phone instead? <button class="quiet inline" onclick="setMode(\'import\')">Import them</button>.</p>');
   o.push('</div>');
   return o.join('');
 }
@@ -2071,6 +2082,7 @@ function setMode(m){
   render();
 }
 function camRetry(){ ui.camError = null; render(); }
+function camOn(){ ui.camWanted = true; ui.camError = null; audioUnlock(); render(); }
 
 /* ---- sound: a small confirmation, never required ---- */
 function audioUnlock(){
@@ -2591,7 +2603,7 @@ function wire(){
       });
     };
   });
-  if(ui.tab==='capture' && stepOf()===2 && ui.photoMode==='camera'){ camStart(); camAttach(); }
+  if(ui.tab==='capture' && stepOf()===2 && ui.photoMode==='camera' && ui.camWanted){ camStart(); camAttach(); }
 }
 function flagList(){ return Object.keys(ui.flags).filter(function(k){ return ui.flags[k]; }); }
 /* The record of what is different today, written before any photo is taken and
