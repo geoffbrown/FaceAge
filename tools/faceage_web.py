@@ -302,6 +302,7 @@ def luma_tol(camera=None):
     os.environ['FACEAGE_LUMA_TOL'] = str(general)            # the chart and pre-flight read these
     os.environ['FACEAGE_LUMA_TOL_BY_CAMERA'] = json.dumps(by_cam)
     pf.LUMA_TOL = v
+    pf.LUMA_WARN = v / 2
     return v
 
 
@@ -1618,8 +1619,8 @@ body{margin:0;background:var(--bg);color:var(--ink);
 
 /* header */
 .top{display:flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap}
-.tabs{display:flex;gap:2px;padding:3px;border-radius:12px;background:var(--line)}
-.tabs button{padding:7px 14px;border:0;border-radius:9px;background:transparent;color:var(--ink2);font-weight:600;font-size:14px}
+.tabs{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--line)}
+.tabs button{padding:7px 16px;border:0;border-radius:99px;background:transparent;color:var(--ink2);font-weight:600;font-size:14px}
 .tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
 .tabs button:hover:not(.on){background:transparent;color:var(--ink)}
 .sessbar{display:flex;align-items:center;gap:10px;margin:0 0 14px;flex-wrap:wrap}
@@ -1642,22 +1643,22 @@ body{margin:0;background:var(--bg);color:var(--ink);
   font-weight:600;font-size:14px;box-shadow:var(--shadow);z-index:20}
 .toast[hidden]{display:none}
 .brand{font-weight:700;font-size:18px;letter-spacing:-.01em;margin-right:auto}
-.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:99px;
+.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:99px;
   background:var(--card);border:1px solid var(--line);font-size:13px;color:var(--ink2)}
 .chip b{color:var(--ink)}
 .chip button{all:unset;cursor:pointer;color:var(--accent);font-size:12.5px;margin-left:2px}
 .chip button:hover{text-decoration:underline}
-.chip.person{padding:4px 4px 4px 12px;gap:10px}
-.chip .pillbtn{all:unset;cursor:pointer;padding:5px 11px;border-radius:99px;background:var(--bg);border:1px solid var(--line);
-  color:var(--ink);font-size:12.5px;font-weight:600;margin:0}
-.chip .pillbtn:hover{background:var(--line);text-decoration:none}
+.chip.person{padding:3px 3px 3px 14px;gap:10px;border-color:var(--line);background:var(--line)}
+.chip .pillbtn{all:unset;cursor:pointer;padding:7px 16px;border-radius:99px;background:var(--card);
+  color:var(--ink);font-size:14px;font-weight:600;margin:0;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.chip .pillbtn:hover{text-decoration:none;filter:brightness(.98)}
 .people{list-style:none;margin:0 0 16px;padding:0;border:1px solid var(--line);border-radius:12px}
 .people li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}
 .people li:last-child{border-bottom:0}
 .people .nm{font-weight:600;font-size:15px}
 .people .cnt{color:var(--ink3);font-size:13px}
 .people .sp{flex:1}
-.people button{padding:8px 12px;font-size:13px}
+.people button{padding:8px 16px;font-size:13px}
 .people .pinfo{display:flex;flex-direction:column;gap:4px}
 .people .bday{font-size:12.5px;color:var(--ink3);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .people .bday input{font:inherit;font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
@@ -1684,7 +1685,9 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .actions .sp{flex:1}
 
 /* controls */
-button{font:inherit;font-weight:600;padding:11px 18px;border-radius:10px;
+/* Buttons: one shape (a pill), three sizes (sm, default, big), four roles
+   (primary, secondary, quiet, danger). Everything clickable uses these. */
+button{font:inherit;font-weight:600;padding:10px 18px;border-radius:99px;
   border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;
   transition:transform .05s ease,background .15s ease}
 button:hover:not(:disabled){background:var(--bg)}
@@ -1715,7 +1718,7 @@ select{padding-right:32px}
 .pathbar input{flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
 .pathbar button{padding:9px 12px}
 .folders{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;max-height:96px;overflow:auto}
-.folders button{padding:6px 11px;font-size:13px;font-weight:500;border-radius:8px}
+.folders button{padding:6px 12px;font-size:13px;font-weight:500}
 .files{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;
   max-height:260px;overflow:auto}
 .files li{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);font-size:14px}
@@ -1731,7 +1734,7 @@ select{padding-right:32px}
 
 /* camera */
 .modes{display:flex;gap:8px;margin-bottom:16px}
-.modes button{flex:1;padding:12px 14px;text-align:left;border-radius:12px;line-height:1.3}
+.modes button{flex:1;padding:12px 16px;text-align:left;line-height:1.3}
 .modes button.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);background:var(--card)}
 .modes small{display:block;font-weight:500;color:var(--ink3);font-size:12.5px;margin-top:2px}
 .camgrid{display:grid;grid-template-columns:400px minmax(0,1fr);gap:0 28px;align-items:start;margin-top:4px}
@@ -1773,7 +1776,7 @@ select{padding-right:32px}
 .camstats .bad{color:var(--bad)} .camstats .bad b{color:var(--bad)}
 .camstats .near{color:var(--warn)} .camstats .near b{color:var(--warn)}
 .camgo{display:flex;flex-direction:column;gap:8px;margin:0}
-.camgo button.big{width:100%;padding:14px 20px;font-size:16px;border-radius:12px}
+.camgo button.big{width:100%;padding:14px 22px;font-size:16px}
 .camstats .dim{color:var(--ink3)}
 .camopts{display:flex;flex-wrap:wrap;gap:6px 20px;margin:0;font-size:13.5px;color:var(--ink2)}
 .camopts label{display:flex;align-items:center;gap:6px;cursor:pointer}
@@ -1844,9 +1847,10 @@ details.notes summary{font-weight:600;color:var(--ink2)}
 details.notes .note{margin-top:8px}
 .note.info{background:var(--bg);border:1px solid var(--line)}
 .cta{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
-.cta .primary{padding:14px 26px;font-size:16px;border-radius:12px}
+.cta button{padding:14px 26px;font-size:16px}
 .cta a{text-decoration:none}
 .minor{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
+.card.centered .cta,.card.centered .minor{justify-content:center}
 .minor button{padding:8px 10px;font-size:13px}
 .done-big{text-align:center;padding:12px 0 6px}
 .done-big .tick{width:56px;height:56px;border-radius:50%;background:var(--good-bg);color:var(--good);
@@ -2777,7 +2781,7 @@ function cardResult(){
 }
 
 function cardDone(R){
-  return '<div class="card"><div class="done-big"><div class="tick">✓</div>'+
+  return '<div class="card centered"><div class="done-big"><div class="tick">✓</div>'+
          '<h2>Added to your tracker</h2>'+
          '<p class="lead"><b>'+R.mean.toFixed(1)+'</b> on '+h(niceDate(S.date))+
          (R.valid?'':' · kept out of the trend line because of the conditions you noted')+'</p></div>'+

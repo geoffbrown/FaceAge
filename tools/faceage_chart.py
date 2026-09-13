@@ -691,8 +691,8 @@ svg{width:100%;height:auto;display:block;overflow:visible}
 .xlab{fill:var(--text-muted);font-size:10.5px;text-anchor:middle}
 .empty{color:var(--text-secondary);font-size:13px;padding:0 4px 12px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--text-secondary);margin-left:auto}
-.ranges{display:flex;gap:2px;padding:2px;border-radius:9px;background:var(--surface-1);border:1px solid var(--border)}
-.ranges button{font:inherit;font-size:12px;font-weight:600;padding:4px 10px;border:0;border-radius:7px;background:transparent;color:var(--text-secondary);cursor:pointer}
+.ranges{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--border)}
+.ranges button{font:inherit;font-size:12.5px;font-weight:600;padding:5px 12px;border:0;border-radius:99px;background:transparent;color:var(--text-secondary);cursor:pointer}
 .ranges button.on{background:var(--surface-2);color:var(--text-primary);box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .rview[hidden]{display:none}
 .today{stroke:var(--text-muted);stroke-width:1;stroke-dasharray:1 3}
@@ -719,11 +719,11 @@ svg{width:100%;height:auto;display:block;overflow:visible}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
 /* buttons */
-.btn{font:inherit;font-size:13px;font-weight:600;padding:8px 12px;border-radius:9px;border:1px solid var(--border);
+.btn{font:inherit;font-size:13px;font-weight:600;padding:8px 14px;border-radius:99px;border:1px solid var(--border);
   background:var(--surface-2);color:var(--text-primary);cursor:pointer}
 .btn:hover:not(:disabled){background:var(--surface-1)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
-.btn.sm{padding:6px 9px;font-size:12.5px}
+.btn.sm{padding:6px 12px;font-size:12.5px}
 .btn.danger{color:var(--crit)}
 .btn.danger:hover:not(:disabled){background:var(--crit-bg)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
@@ -749,9 +749,9 @@ tr.detail td{background:var(--surface-1);padding:8px 12px 14px}
 .note:empty::before{content:'add a note';color:var(--text-muted);font-style:italic}
 .note:focus{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 td.act{white-space:nowrap;text-align:right;padding-right:0}
-td.act .btn{margin-left:4px;padding:6px 8px}
+td.act .btn{margin-left:4px;padding:6px 12px}
 td.chev,th.chev{width:28px;padding-left:4px;padding-right:0}
-.more{all:unset;cursor:pointer;display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:6px;
+.more{all:unset;cursor:pointer;display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:50%;
   color:var(--text-muted);font-size:16px;transition:transform .2s}
 .more:hover{background:var(--surface-1);color:var(--text-primary)}
 tr.open .more{transform:rotate(90deg)}
@@ -759,14 +759,14 @@ tr.open .more{transform:rotate(90deg)}
 .setup.ok{background:var(--good-bg);color:var(--good)}
 .setup.bad{background:var(--warn-bg);color:var(--warn)}
 tr.exc td.d{color:var(--text-muted);text-decoration:line-through}
-.tagx{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:6px;font-size:10.5px;font-weight:600;text-decoration:none;
+.tagx{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:99px;font-size:10.5px;font-weight:600;text-decoration:none;
   background:var(--warn-bg);color:var(--warn);text-transform:uppercase;letter-spacing:.04em}
 .warn-dot{display:inline-block;margin-left:6px;width:16px;height:16px;border-radius:50%;background:var(--warn-bg);color:var(--warn);
   font-size:11px;font-weight:700;text-align:center;line-height:16px}
 .sel{width:28px}
 .sessions:not(.editing) .sel{display:none}
 .sessions.editing td.act .del,.sessions.editing td.act .fo{display:none}
-.editbar{display:flex;gap:12px;align-items:center;margin:8px 0 10px;padding:10px 12px;border-radius:10px;background:var(--surface-1)}
+.editbar{display:flex;gap:12px;align-items:center;margin:8px 0 10px;padding:8px 8px 8px 14px;border-radius:99px;background:var(--surface-1)}
 .editbar[hidden]{display:none}
 .sel-all{display:flex;gap:6px;align-items:center;font-size:13px}
 .help{border-bottom:1px dotted var(--text-muted);cursor:help}
