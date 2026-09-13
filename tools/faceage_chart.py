@@ -21,7 +21,7 @@ OUT      = os.path.join(RESULTS, 'tracker.html')
 PROFILE  = os.path.join(os.path.dirname(RESULTS), 'profile.json')
 STUDY_DAYS = 182            # the pre-registered six-month window
 
-LUMA_TOL = 5.0          # exposure drift beyond this makes a session suspect
+LUMA_TOL = float(os.environ.get('FACEAGE_LUMA_TOL') or 5.0)   # set with `faceage tolerance`
 W, H     = 760, 210     # chart geometry
 PAD_L, PAD_R, PAD_T, PAD_B = 54, 18, 14, 30
 
@@ -377,7 +377,7 @@ HELP = {
     'median': 'The middle photo of the session. Less swayed by one odd photo than the average.',
     'n': 'Photos that went into the number. Ten is the target; fewer means a noisier session.',
     'sd': 'How much the photos in this session disagreed with each other. Under about 1.5 is normal.',
-    'exposure': 'Brightness on your face, 0 to 255. Keep it within 5 of your first session on this camera. Lighting alone can move FaceAge by years.',
+    'exposure': 'Brightness on your face, 0 to 255. Keep it within %.0f of your first session on this camera. Lighting alone can move FaceAge by years.' % LUMA_TOL,
     'flagged': 'Photos the analysis had a doubt about: face too small in the frame, low confidence, or clipped at an edge.',
     'time': 'When the analysis ran, in local time.',
     'camera': 'Which camera took the photos. Only sessions from the same camera can be compared.',
@@ -565,9 +565,9 @@ def main():
     sci.append('Pairwise session to session differences are never interpreted; only the fitted trend is. '
                'Real change over one week is close to zero, so week to week movement is noise.')
     details = ('<details class="card nerd"><summary>The numbers behind this</summary>'
-               '<h3>Brightness per session</h3><p class="sub">Green band: within 5 of the first session on that camera.</p>%s'
+               '<h3>Brightness per session</h3><p class="sub">Green band: within %.0f of the first session on that camera.</p>%s'
                '<ul class="sci">%s</ul></details>'
-               % (spark(rows, base_by_cam), ''.join('<li>%s</li>' % html.escape(t) for t in sci)))
+               % (LUMA_TOL, spark(rows, base_by_cam), ''.join('<li>%s</li>' % html.escape(t) for t in sci)))
 
     page = PAGE.replace('__GEN__', datetime.datetime.now().strftime('%-d %b %Y, %H:%M'))
     page = (page.replace('__HERO__', hero).replace('__CHART__', chart_card)

@@ -44,6 +44,15 @@ letting the person sit at desk distance rather than leaning into a wide lens. Th
 recorded in the manifest. A Mac on a desk is easier to keep fixed than a propped phone, and
 it removes the AirDrop step.
 
+The brightness tolerance (5 by default) is one setting, `settings.json` in the data folder,
+read by the result card, the live guide, the pre-flight and the tracker alike. It is meant to
+be set from evidence: `faceage sensitivity DATE` scores one session as shot and at four
+brightness gains (0.90 to 1.10, the kind of shift a webcam's auto-exposure makes between
+sittings) and reports how far FaceAge actually moved, against the session-to-session spread.
+`faceage tolerance N "reason"` records the number with its reason and date. The model
+standardises every face crop before it sees it, so a uniform brightness shift is largely
+removed; the tolerance should reflect the measured sensitivity, not a guess.
+
 The exposure baseline is per camera: the first logged session shot on that camera. A phone
 baseline says nothing about how bright the Mac's camera should read, so a Mac session is
 never held to one; its first logged session sets the Mac baseline instead.

@@ -116,6 +116,7 @@ def base_state(**kw):
         'scored': False, 'result': None, 'baseline_luma': 121.3,
         'has_b': False, 'capture': None, 'source': None, 'series_source': None,
         'baseline': None, 'baseline_camera': None, 'fill_calibration': None, 'luma_calibration': None,
+        'luma_tol': 5.0,
         'preflight': {'available': False, 'why': 'not yet'},
         'job': {'running': False, 'label': '', 'rc': None, 'log': [],
                 'progress': {'phase': None, 'done': 0, 'total': 0, 'pct': 0},
