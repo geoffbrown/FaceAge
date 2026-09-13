@@ -53,6 +53,11 @@ sittings) and reports how far FaceAge actually moved, against the session-to-ses
 standardises every face crop before it sees it, so a uniform brightness shift is largely
 removed; the tolerance should reflect the measured sensitivity, not a guess.
 
+When two sittings shot minutes apart disagree, `faceage compare D1 D2 [D3 ...]` puts them
+side by side, photo by photo: FaceAge, face size in the frame, brightness and detector
+confidence, then says in a sentence what actually differed. Three or more sittings that all
+move the same way are called out as drift rather than noise.
+
 The exposure baseline is per camera: the first logged session shot on that camera. A phone
 baseline says nothing about how bright the Mac's camera should read, so a Mac session is
 never held to one; its first logged session sets the Mac baseline instead.
