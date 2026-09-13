@@ -1346,6 +1346,49 @@ class TestBirthday(WebTestCase):
         self.assertNotIn('class="agelin"', page)
 
 
+class TestLumaCalibration(WebTestCase):
+    """The camera screen should hold a session to the analysis baseline in the
+    analysis's own units. The offset between the live readout and the
+    pipeline is learned from matched frames, current readout method only."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def capture(self, date, lives, method='box-rgb-2'):
+        for i, live in enumerate(lives, 1):
+            self.w.do_capture({'person': 'me', 'date': date, 'batch': '20260913-101500', 'index': i,
+                               'image': data_url(), 'settings': {'luma_method': method},
+                               'frame': {'luma': live}})
+
+    def per_image(self, date, lumas):
+        p = os.path.join(self.w.results_dir('me'), '%s_per_image.csv' % date)
+        with open(p, 'w') as fh:
+            fh.write('subj_id,file,faceage,status,hard_flags,advisory_flags,confidence,n_faces,'
+                     'source_w,source_h,crop_w,crop_h,crop_luma_mean,crop_luma_std,'
+                     'face_fill_height_frac,face_fill_area_frac,error\n')
+            for i, l in enumerate(lumas, 1):
+                fh.write('x,cam_20260913-101500_%02d.jpg,44.1,OK,,,0.999,1,540,720,300,600,%.1f,41,0.85,0.5,\n' % (i, l))
+
+    def test_learns_the_offset(self):
+        self.capture('2026-09-13', [101.0] * 10)
+        self.per_image('2026-09-13', [173.3] * 10)
+        c = self.w.luma_calibration('me')
+        self.assertEqual(c['n'], 10)
+        self.assertAlmostEqual(c['offset'], 72.3, places=1)
+        self.assertEqual(self.w.state('me', '2026-09-14')['luma_calibration']['offset'], 72.3)
+
+    def test_ignores_old_readout_method(self):
+        self.capture('2026-09-13', [104.0] * 10, method=None)
+        self.per_image('2026-09-13', [173.3] * 10)
+        self.assertIsNone(self.w.luma_calibration('me'))
+
+    def test_needs_five_frames(self):
+        self.capture('2026-09-13', [101.0] * 4)
+        self.per_image('2026-09-13', [173.3] * 4)
+        self.assertIsNone(self.w.luma_calibration('me'))
+
+
 class TestBaselinePerCamera(WebTestCase):
     """The exposure baseline is the first logged session's face brightness.
     That number only means something against the same camera, so a session

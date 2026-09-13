@@ -1250,6 +1250,43 @@ def fill_calibration(name):
     return {'k': round(k, 3), 'n': len(ratios)}
 
 
+def luma_calibration(name):
+    """Offset between the live brightness readout and the pipeline's crop
+    mean, learned from this person's scored camera sessions (current readout
+    method only). With it the camera screen can hold a session to the
+    analysis baseline in the analysis's own units, which is the number the
+    session is actually judged on.
+    """
+    base = os.path.join(subj_dir(name), 'sessions')
+    if not os.path.isdir(base):
+        return None
+    offsets = []
+    for label in sorted(os.listdir(base)):
+        m = capture_manifest(name, label) if DATE_RE.match(label) else None
+        if not m or (m.get('settings') or {}).get('luma_method') != LUMA_METHOD:
+            continue
+        per = os.path.join(results_dir(name), '%s_per_image.csv' % label)
+        if not os.path.exists(per):
+            continue
+        try:
+            measured = {i['file']: i['luma'] for i in pf.load_per_image(per)}
+        except SystemExit:
+            continue
+        for f in m.get('frames', []):
+            live, got = f.get('luma'), measured.get(f.get('file'))
+            if isinstance(live, (int, float)) and got is not None:
+                offsets.append(got - live)
+    if len(offsets) < 5:
+        return None
+    offsets.sort()
+    mid = len(offsets) // 2
+    o = offsets[mid] if len(offsets) % 2 else (offsets[mid - 1] + offsets[mid]) / 2
+    return {'offset': round(o, 1), 'n': len(offsets)}
+
+
+LUMA_METHOD = 'box-rgb-2'      # must match the page; bump both together
+
+
 def do_preflight(person, date):
     """Diagnose the session -- but only if the QA on disk still describes the
     photos that are staged now.
@@ -1405,6 +1442,7 @@ def state(person=None, date=None, browse=None):
                   # infer the source from the session: ask for the Mac's directly
                   'baseline_camera': baseline_info(person, 'mac-camera'),
                   'fill_calibration': fill_calibration(person),
+                  'luma_calibration': luma_calibration(person),
                   'preflight': do_preflight(person, date)})
     return s
 
@@ -1964,8 +2002,12 @@ function liveBase(){
   /* live compares to live: the baseline session recorded what this readout
      said at the time. Only if that is missing does the pipeline number stand
      in, with a looser tolerance because the two are not the same measure. */
-  var b = S.baseline_camera;
+  var b = S.baseline_camera, c = S.luma_calibration;
   if(!b) return null;
+  /* Best: the analysis baseline itself, translated into what this readout
+     should say, once the offset between the two has been learned. Then the
+     gate is the same test the analysis will apply, with a point of margin. */
+  if(b.luma!=null && c && c.offset!=null) return {value:b.luma - c.offset, tol:4, live:true, exact:true};
   if(b.live_luma!=null && b.live_method === LUMA_METHOD) return {value:b.live_luma, tol:TARGET.lumaTol, live:true};
   return null;                       // a differently measured number is not a baseline for this readout
 }
@@ -1973,7 +2015,8 @@ function baselineLine(){
   var b = S.baseline_camera, lb = liveBase();
   if(lb)
     return 'Brightness baseline for this camera: <b>'+Math.round(lb.value)+'</b>, set '+h(niceDate(b.date))+'. '+
-           'The camera sets its own exposure, so this is about keeping the lamp and room the same, not making it brighter.';
+           (lb.exact ? 'Matched to the analysis, so the frame goes green only when the analysis would pass it. ' : '')+
+           'The camera sets its own exposure, so this is about keeping the lamp, the room and what is behind you the same, not making it brighter.';
   if(b && b.luma!=null)
     return 'Your baseline session was measured before this readout existed, so today is not checked against it live. '+
            'Match the lamp and room to that day; the analysis compares afterwards.';
@@ -2230,12 +2273,15 @@ function guidance(){
     if(L < TARGET.lumaLow){ CAM.lumaOk = false; lumaCls = 'bad'; lumaMsg = 'too dark for the camera: more light on your face'; }
     else if(L > TARGET.lumaHigh){ CAM.lumaOk = false; lumaCls = 'bad'; lumaMsg = 'washed out: move the lamp back or off to the side'; }
     else if(base!=null){
-      var dl = L - base, ad = Math.abs(dl);
+      var dl = L - base, ad = Math.abs(dl), block = lb.exact ? lb.tol : TARGET.lumaBlock;
       if(ad <= lb.tol){ lumaCls = 'good'; }
-      else if(ad <= TARGET.lumaBlock){ lumaCls = 'near'; lumaNote = (dl>0 ? 'a little brighter' : 'a little darker')+' than your baseline. Fine to shoot; if the lamp or room moved, put it back.'; }
+      else if(ad <= block){ lumaCls = 'near'; lumaNote = (dl>0 ? 'a little brighter' : 'a little darker')+' than your baseline. Fine to shoot; if the lamp or room moved, put it back.'; }
       else { CAM.lumaOk = false; lumaCls = 'bad';
-             lumaMsg = (dl>0 ? 'much brighter' : 'much darker')+' than your baseline ('+Math.round(base)+'). Same lamp, same spot, same room light as that day, then give the camera a second to settle'; }
+             lumaMsg = Math.round(ad)+' '+(dl>0 ? 'brighter' : 'darker')+' than your baseline. The camera sets its own exposure, so what moves this is the lamp, the room light and what is behind you: put them back the way they were, then give it a second to settle'; }
     }
+    // the camera re-meters when anything moves: wait for the reading to hold still
+    CAM.lumaHist = (CAM.lumaHist || []).concat([L]).slice(-6);
+    CAM.lumaStable = CAM.lumaHist.length >= 6 && (Math.max.apply(null, CAM.lumaHist) - Math.min.apply(null, CAM.lumaHist)) <= 2;
   }
   if(!f){
     CAM.posOk = false; state = 'none';
@@ -2254,7 +2300,7 @@ function guidance(){
     else if(lumaNote && !CAM.running){ state = 'ok'; msg = (CAM.armed ? 'Hold still. ' : '')+'Light is '+lumaNote; }
     else { state = 'ok'; msg = CAM.running ? msg : (CAM.armed ? 'Perfect. Hold still…' : 'Perfect. Press Start.'); }
   }
-  CAM.aligned = CAM.posOk && CAM.lumaOk;
+  CAM.aligned = CAM.posOk && CAM.lumaOk && (base==null || CAM.lumaStable !== false);
   CAM.stable = CAM.aligned ? (CAM.stable||0)+1 : 0;       // consecutive aligned readings
   CAM.guide = msg || '';
   if(CAM.aligned && !wasAligned){ CAM.alignedSince = now(); if(!CAM.running) beep(SND.lined); }
