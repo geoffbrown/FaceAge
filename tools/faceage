@@ -10,6 +10,7 @@ IMAGE="${FACEAGE_IMAGE:-faceage:cpu-py36}"
 # the brightness tolerance, if one has been set with `faceage tolerance`
 if [[ -f "$DATA/settings.json" ]] && [[ -z "${FACEAGE_LUMA_TOL:-}" ]]; then
   export FACEAGE_LUMA_TOL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("luma_tol",""))' "$DATA/settings.json" 2>/dev/null)"
+  export FACEAGE_LUMA_TOL_BY_CAMERA="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("luma_tol_by_camera",{})))' "$DATA/settings.json" 2>/dev/null)"
 fi
 MODEL="$REPO/models/faceage_model.h5"
 DEFAULT_SUBJECT="${FACEAGE_SUBJECT:-me}"
@@ -523,7 +524,11 @@ score_folder_quiet() {
 
 # The brightness tolerance every session is held to, with the reason on record.
 cmd_tolerance() {
-  local n="${1:-}" reason="${2:-}"
+  # faceage tolerance                       show
+  # faceage tolerance N "reason"            set for every camera
+  # faceage tolerance N "reason" --camera "Studio Display Camera"   set for one camera
+  local n="${1:-}" reason="${2:-}" camera=""
+  if [[ "${3:-}" == "--camera" ]]; then camera="${4:-}"; [[ -n "$camera" ]] || die "--camera needs the camera's name as the app shows it"; fi
   local f="$DATA/settings.json"
   if [[ -z "$n" ]]; then
     python3 - "$f" <<'PY'
@@ -531,22 +536,30 @@ import json, os, sys
 f = sys.argv[1]
 d = json.load(open(f)) if os.path.exists(f) else {}
 print('brightness tolerance: %s (default 5)' % d.get('luma_tol', 'not set'))
+for cam, v in (d.get('luma_tol_by_camera') or {}).items():
+    print('  %s: %s' % (cam, v))
 if d.get('luma_tol_reason'): print('reason: %s' % d['luma_tol_reason'])
-if d.get('luma_tol_set_at'): print('set: %s' % d['luma_tol_set_at'])
+for cam, r in (d.get('luma_tol_reason_by_camera') or {}).items():
+    print('  %s: %s' % (cam, r))
 PY
     return 0
   fi
-  [[ "$n" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "usage: faceage tolerance N \"reason\""
+  [[ "$n" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "usage: faceage tolerance N \"reason\" [--camera \"NAME\"]"
   [[ -n "$reason" ]] || die "a reason is required: it goes on the record with the number"
   mkdir -p "$DATA"
-  python3 - "$f" "$n" "$reason" <<'PY'
+  python3 - "$f" "$n" "$reason" "$camera" <<'PY'
 import json, os, sys, datetime
-f, n, reason = sys.argv[1:4]
+f, n, reason, camera = sys.argv[1:5]
 d = json.load(open(f)) if os.path.exists(f) else {}
-d['luma_tol'] = float(n); d['luma_tol_reason'] = reason
-d['luma_tol_set_at'] = datetime.datetime.now().replace(microsecond=0).isoformat()
+now = datetime.datetime.now().replace(microsecond=0).isoformat()
+if camera:
+    d.setdefault('luma_tol_by_camera', {})[camera] = float(n)
+    d.setdefault('luma_tol_reason_by_camera', {})[camera] = '%s (%s)' % (reason, now)
+    print('brightness tolerance for %s set to %s' % (camera, n))
+else:
+    d['luma_tol'] = float(n); d['luma_tol_reason'] = reason; d['luma_tol_set_at'] = now
+    print('brightness tolerance set to %s for every camera' % n)
 json.dump(d, open(f, 'w'), indent=2)
-print('brightness tolerance set to %s' % n)
 PY
   info "record this in docs/PREREGISTRATION.md under Amendments if the study has started"
 }
@@ -652,8 +665,9 @@ FaceAge — local scoring pipeline
   faceage subjects           list everyone with data on this machine
   faceage sensitivity [DATE] score a session brighter and darker: how much does
                              brightness really move FaceAge on your face?
-  faceage tolerance [N "reason"]
-                             show or set the brightness tolerance (default 5)
+  faceage tolerance [N "reason" [--camera "NAME"]]
+                             show or set the brightness tolerance (default 5),
+                             for every camera or for one by name
   faceage tidy [--all]       move discarded and replaced sessions to the Trash
                              (--all: also sessions never added to a tracker)
   faceage reset              start fresh: move ALL data aside (nothing deleted)
