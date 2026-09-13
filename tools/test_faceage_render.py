@@ -153,10 +153,14 @@ def states():
     assertions on what the step must and must not show."""
     return [
         {'name': 'step 0: no people', 'state': base_state(people=[], person=None),
-         'expect': ['Who are we measuring', 'Add'], 'reject': ['Continue</button>', 'New session']},
-        {'name': 'step 0: choosing', 'state': base_state(),
+         'expect': ['Who are we measuring', 'Add'], 'reject': ['Continue</button>', 'New session', 'Rename']},
+        {'name': 'step 0: choosing', 'state': base_state(people=[{'name': 'me', 'sessions': 1, 'logged': 1},
+                                                                 {'name': 'jackie', 'sessions': 0, 'logged': 0}]),
          'ui': {'choosing': True},
-         'expect': ['Who are we measuring', 'Continue']},
+         'expect': ['Who are we measuring', 'class="people"', '1 in tracker · current', 'Continue</button>',
+                    "renamePerson('jackie')", "pickPerson('jackie')", 'Choose</button>',
+                    'class="pillbtn" onclick="changePerson()">Change'],
+         'reject': ['<select', 'rename</button>']},
         # one person: straight to the camera, no who step, no conditions step
         {'name': 'capture: first ever session',
          'state': base_state(people=[{'name': 'me', 'sessions': 0, 'logged': 0}]),

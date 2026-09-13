@@ -1412,6 +1412,17 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .chip b{color:var(--ink)}
 .chip button{all:unset;cursor:pointer;color:var(--accent);font-size:12.5px;margin-left:2px}
 .chip button:hover{text-decoration:underline}
+.chip.person{padding:4px 4px 4px 12px;gap:10px}
+.chip .pillbtn{all:unset;cursor:pointer;padding:5px 11px;border-radius:99px;background:var(--bg);border:1px solid var(--line);
+  color:var(--ink);font-size:12.5px;font-weight:600;margin:0}
+.chip .pillbtn:hover{background:var(--line);text-decoration:none}
+.people{list-style:none;margin:0 0 16px;padding:0;border:1px solid var(--line);border-radius:12px}
+.people li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.people li:last-child{border-bottom:0}
+.people .nm{font-weight:600;font-size:15px}
+.people .cnt{color:var(--ink3);font-size:13px}
+.people .sp{flex:1}
+.people button{padding:8px 12px;font-size:13px}
 
 /* step rail */
 
@@ -1701,8 +1712,7 @@ function render(){
     ? '<button class="'+(ui.tab==='capture'?'on':'')+'" onclick="setTab(\'capture\')">New session</button>'+
       '<button class="'+(ui.tab==='progress'?'on':'')+'" onclick="setTab(\'progress\')">Progress</button>' : '';
   document.getElementById('who').innerHTML = S.person
-    ? '<span class="chip"><b>'+h(S.person)+'</b><button onclick="renamePerson()">rename</button>'+
-      '<button onclick="changePerson()">change</button></span>' : '';
+    ? '<span class="chip person"><b>'+h(S.person)+'</b><button class="pillbtn" onclick="changePerson()">Change</button></span>' : '';
 
   var o = [];
   if(ui.tab==='progress' && S.person){
@@ -1757,10 +1767,14 @@ function cardWho(){
   var o = ['<div class="card"><h2>Who are we measuring?</h2>',
            '<p class="lead">Each person gets their own tracker. Nothing is compared between people.</p>'];
   if(S.people.length){
-    o.push('<div class="row"><select id="pick">');
+    o.push('<ul class="people">');
     S.people.forEach(function(p){
-      o.push('<option value="'+h(p.name)+'">'+h(p.name)+' · '+p.logged+' in tracker</option>');});
-    o.push('</select><button class="primary" onclick="pickPerson()">Continue</button></div>');
+      var cur = p.name === S.person;
+      o.push('<li><span class="nm">'+h(p.name)+'</span><span class="cnt">'+p.logged+' in tracker'+(cur?' · current':'')+'</span><span class="sp"></span>'+
+             '<button class="quiet" onclick="renamePerson(\''+h(p.name)+'\')">Rename</button>'+
+             '<button class="'+(cur?'':'primary')+'" onclick="pickPerson(\''+h(p.name)+'\')">'+(cur?'Continue':'Choose')+'</button></li>');
+    });
+    o.push('</ul>');
     o.push('<p class="hint">Or add someone new:</p>');
   }
   o.push('<div class="row"><input type="text" id="newname" placeholder="name" size="14">'+
@@ -2484,13 +2498,13 @@ function refreshUseBtn(){
 }
 
 /* ---- actions --------------------------------------------------------------- */
-function pickPerson(){ var s = document.getElementById('pick'); S.person = s.value; S.date = null; sel = {}; ui.choosing = false; load(); }
+function pickPerson(name){ S.person = name; S.date = null; sel = {}; ui.choosing = false; ui.flags = {}; ui.flagNote = ''; load(); }
 function changePerson(){ ui.choosing = true; ui.tab = 'capture'; render(); }
-function renamePerson(){
-  var n = prompt('Rename '+S.person+' to:', S.person);
-  if(!n || n.trim()===S.person) return;
-  api('/api/person/rename', {old:S.person, new:n.trim()})
-    .then(function(j){ S.person = j.name; load(); }).catch(fail);
+function renamePerson(name){
+  var n = prompt('Rename '+name+' to:', name);
+  if(!n || n.trim()===name) return;
+  api('/api/person/rename', {old:name, new:n.trim()})
+    .then(function(j){ if(S.person === name) S.person = j.name; load(); }).catch(fail);
 }
 function addPerson(){
   var n = (document.getElementById('newname').value||'').trim();
