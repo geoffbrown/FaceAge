@@ -132,6 +132,52 @@ def session_dir(name, date):
     return os.path.join(subj_dir(name), 'sessions', safe_date(date))
 
 
+def read_profile(name):
+    p = os.path.join(subj_dir(name), 'profile.json')
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p) as fh:
+            return json.load(fh) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def age_on(birthday, day):
+    """Age in years, as a decimal, on a given date."""
+    try:
+        b = datetime.date.fromisoformat(birthday)
+    except (TypeError, ValueError):
+        return None
+    return round((day - b).days / 365.2425, 2)
+
+
+def do_profile(body):
+    """Set a person's birthday. FaceAge only means something against a real
+    age; this is the one piece of personal data the app asks for, kept in the
+    person's own folder and nowhere else."""
+    name = safe_subject(body.get('name'))
+    if not os.path.isdir(subj_dir(name)):
+        raise ValueError('%s does not exist' % name)
+    raw = (body.get('birthday') or '').strip()
+    prof = read_profile(name)
+    if not raw:
+        prof.pop('birthday', None)
+    else:
+        try:
+            b = datetime.date.fromisoformat(raw)
+        except ValueError:
+            raise ValueError('birthday must be YYYY-MM-DD')
+        age = age_on(raw, datetime.date.today())
+        if age is None or age < 10 or age > 110:
+            raise ValueError('that birthday gives an age of %s, which cannot be right' % age)
+        prof['birthday'] = b.isoformat()
+    with open(os.path.join(subj_dir(name), 'profile.json'), 'w') as fh:
+        json.dump(prof, fh, indent=2)
+    build_chart(name)
+    return {'ok': True, 'name': name, 'birthday': prof.get('birthday')}
+
+
 def list_people():
     base = os.path.join(DATA, 'subjects')
     if not os.path.isdir(base):
@@ -149,7 +195,10 @@ def list_people():
         nsess = len([d for d in os.listdir(sess)
                      if os.path.isdir(os.path.join(sess, d))]) \
             if os.path.isdir(sess) else 0
-        out.append({'name': n, 'sessions': nsess, 'logged': rows})
+        prof = read_profile(n)
+        out.append({'name': n, 'sessions': nsess, 'logged': rows,
+                    'birthday': prof.get('birthday'),
+                    'age': age_on(prof.get('birthday'), datetime.date.today())})
     return out
 
 
@@ -1423,6 +1472,10 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .people .cnt{color:var(--ink3);font-size:13px}
 .people .sp{flex:1}
 .people button{padding:8px 12px;font-size:13px}
+.people .pinfo{display:flex;flex-direction:column;gap:4px}
+.people .bday{font-size:12.5px;color:var(--ink3);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.people .bday input{font:inherit;font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.people .bday small{color:var(--ink3)}
 
 /* step rail */
 
@@ -1770,7 +1823,10 @@ function cardWho(){
     o.push('<ul class="people">');
     S.people.forEach(function(p){
       var cur = p.name === S.person;
-      o.push('<li><span class="nm">'+h(p.name)+'</span><span class="cnt">'+p.logged+' in tracker'+(cur?' · current':'')+'</span><span class="sp"></span>'+
+      o.push('<li><div class="pinfo"><span class="nm">'+h(p.name)+'</span><span class="cnt">'+p.logged+' in tracker'+(cur?' · current':'')+
+             (p.age!=null ? ' · age '+p.age.toFixed(1) : '')+'</span>'+
+             '<span class="bday"><label>Birthday <input type="date" class="bd" data-name="'+h(p.name)+'" value="'+h(p.birthday||'')+'"></label>'+
+             (p.birthday ? '' : '<small>so the tracker can compare FaceAge with your real age</small>')+'</span></div><span class="sp"></span>'+
              '<button class="quiet" onclick="renamePerson(\''+h(p.name)+'\')">Rename</button>'+
              '<button class="'+(cur?'':'primary')+'" onclick="pickPerson(\''+h(p.name)+'\')">'+(cur?'Continue':'Choose')+'</button></li>');
     });
@@ -2469,6 +2525,11 @@ function wire(){
   if(p) p.addEventListener('keydown', function(e){ if(e.key==='Enter') goPath(); });
   var nn = document.getElementById('newname');
   if(nn) nn.addEventListener('keydown', function(e){ if(e.key==='Enter') addPerson(); });
+  document.querySelectorAll('input.bd').forEach(function(b){
+    b.onchange = function(){
+      api('/api/person/profile', {name:b.getAttribute('data-name'), birthday:b.value}).then(function(){ load(); }).catch(fail);
+    };
+  });
   document.querySelectorAll('button.flag').forEach(function(b){
     b.onclick = function(){
       var k = b.getAttribute('data-flag');
@@ -2608,6 +2669,7 @@ ROUTES_POST = {
     '/api/reveal': do_reveal,
     '/api/delete': do_delete,
     '/api/person/rename': do_rename,
+    '/api/person/profile': do_profile,
 }
 
 

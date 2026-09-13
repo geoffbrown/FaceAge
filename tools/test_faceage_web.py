@@ -1151,13 +1151,16 @@ class TestTrackerPage(WebTestCase):
                              '%r belongs under the details disclosure, not on the page' % term)
         self.assertIn('Your FaceAge, latest session', page)
         self.assertIn('Too early to call', page) if 'Two cameras' not in page else None
-        self.assertIn('Shooting it the same way?', page)
+        self.assertIn('>Setup</span>', page)
+        self.assertIn('of 3 shot cleanly', page)
+        self.assertIn('<td class="chev"><button class="more"', page)
         self.assertIn('The numbers behind this', page)
 
     def test_brightness_compares_within_camera(self):
         page = self.build()
         # the Mac session is the first on its camera: it is the baseline, not a drift
-        self.assertNotIn('2026-09-12<span class="warn-dot"', page)
+        self.assertIn('<td class="d">2026-09-12</td><td>Mac</td>', page)
+        self.assertIn('✓ baseline</span>', page)
         self.assertIn('(baseline)', page)
 
 
@@ -1291,6 +1294,56 @@ class TestFillCalibration(WebTestCase):
     def test_unscored_sessions_do_not_count(self):
         self.capture('2026-09-13', [0.788] * 10)
         self.assertIsNone(self.w.fill_calibration('me'))
+
+
+class TestBirthday(WebTestCase):
+    """FaceAge only means something against a real age. The birthday is kept
+    in the person's own folder, validated, and the tracker uses it for the
+    gap, the real-age line, and the aging rate."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def test_set_and_clear(self):
+        r = self.w.do_profile({'name': 'me', 'birthday': '1982-03-04'})
+        self.assertEqual(r['birthday'], '1982-03-04')
+        p = [x for x in self.w.list_people() if x['name'] == 'me'][0]
+        self.assertEqual(p['birthday'], '1982-03-04')
+        self.assertGreater(p['age'], 40)
+        self.w.do_profile({'name': 'me', 'birthday': ''})
+        self.assertIsNone([x for x in self.w.list_people() if x['name'] == 'me'][0]['birthday'])
+
+    def test_rejects_nonsense(self):
+        for bad in ('yesterday', '2030-01-01', '1800-01-01', '2020-13-01'):
+            with self.assertRaises(ValueError, msg=bad):
+                self.w.do_profile({'name': 'me', 'birthday': bad})
+
+    def test_route(self):
+        self.assertIs(self.w.ROUTES_POST['/api/person/profile'], self.w.do_profile)
+
+    def test_tracker_shows_the_gap_and_the_age_line(self):
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-12', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-12')                 # mean 44.1
+        self.w.do_profile({'name': 'me', 'birthday': '1980-09-12'})   # exactly 46.0 that day
+        with open(self.w.build_chart('me')) as fh:
+            page = fh.read()
+        self.assertIn('<b>1.9 years younger</b> than your age of 46.0', page)
+        self.assertIn('class="agelin"', page)
+        self.assertIn('>your age<', page)
+        self.assertIn('data-range="30d"', page)
+        self.assertIn('class="rng on" data-range="study"', page)
+        self.assertIn('data-range="all"', page)
+
+    def test_tracker_without_birthday_invites_one(self):
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-12', 'files': ['IMG_1.jpg']})
+        self.history('me', '2026-09-12')
+        with open(self.w.build_chart('me')) as fh:
+            page = fh.read()
+        self.assertIn('Add your birthday', page)
+        self.assertNotIn('class="agelin"', page)
 
 
 class TestBaselinePerCamera(WebTestCase):
