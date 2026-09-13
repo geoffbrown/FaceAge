@@ -115,7 +115,7 @@ def base_state(**kw):
         'checklist': None, 'checklist_stale': False, 'prev_checklist': None,
         'scored': False, 'result': None, 'baseline_luma': 121.3,
         'has_b': False, 'capture': None, 'source': None, 'series_source': None,
-        'baseline': None, 'baseline_camera': None,
+        'baseline': None, 'baseline_camera': None, 'fill_calibration': None,
         'preflight': {'available': False, 'why': 'not yet'},
         'job': {'running': False, 'label': '', 'rc': None, 'log': [],
                 'progress': {'phase': None, 'done': 0, 'total': 0, 'pct': 0},
