@@ -1243,6 +1243,56 @@ class TestFlags(WebTestCase):
         self.assertIn("postMessage({faceage:'height'", page)
 
 
+class TestFillCalibration(WebTestCase):
+    """The live face-size estimate is gated against the pipeline bar, so the
+    conversion between the two must come from this person's own frames once
+    they exist. Otherwise the guide passes frames the pipeline sets aside."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.person()
+
+    def capture(self, date, raws, batch='20260913-101500'):
+        for i, raw in enumerate(raws, 1):
+            self.w.do_capture({'person': 'me', 'date': date, 'batch': batch, 'index': i,
+                               'image': data_url(), 'settings': {},
+                               'frame': {'fill_raw': raw, 'fill': round(raw * 1.12, 3)}})
+
+    def per_image(self, date, fills):
+        p = os.path.join(self.w.results_dir('me'), '%s_per_image.csv' % date)
+        with open(p, 'w') as fh:
+            fh.write('subj_id,file,faceage,status,hard_flags,advisory_flags,confidence,n_faces,'
+                     'source_w,source_h,crop_w,crop_h,crop_luma_mean,crop_luma_std,'
+                     'face_fill_height_frac,face_fill_area_frac,error\n')
+            for i, fill in enumerate(fills, 1):
+                fh.write('x,cam_20260913-101500_%02d.jpg,44.1,OK,,,0.999,1,540,720,300,%d,121.3,41,%.4f,0.5,\n'
+                         % (i, int(720 * fill), fill))
+
+    def test_nothing_until_five_matched_frames(self):
+        self.capture('2026-09-13', [0.788] * 4)
+        self.per_image('2026-09-13', [0.79] * 4)
+        self.assertIsNone(self.w.fill_calibration('me'))
+        self.assertIsNone(self.w.state('me', '2026-09-14')['fill_calibration'])
+
+    def test_learns_the_ratio_from_matched_frames(self):
+        # the guide estimated 0.788 * 1.12 = 0.88, the pipeline measured 0.79
+        self.capture('2026-09-13', [0.788] * 10)
+        self.per_image('2026-09-13', [0.79] * 10)
+        c = self.w.fill_calibration('me')
+        self.assertEqual(c['n'], 10)
+        self.assertAlmostEqual(c['k'], 0.79 / 0.788, places=2)
+        self.assertLess(c['k'], 1.12, 'this face maps lower than the default')
+
+    def test_median_ignores_an_odd_frame(self):
+        self.capture('2026-09-13', [0.788] * 9 + [0.30])
+        self.per_image('2026-09-13', [0.79] * 9 + [0.79])
+        self.assertAlmostEqual(self.w.fill_calibration('me')['k'], 0.79 / 0.788, places=2)
+
+    def test_unscored_sessions_do_not_count(self):
+        self.capture('2026-09-13', [0.788] * 10)
+        self.assertIsNone(self.w.fill_calibration('me'))
+
+
 class TestBaselinePerCamera(WebTestCase):
     """The exposure baseline is the first logged session's face brightness.
     That number only means something against the same camera, so a session

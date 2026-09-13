@@ -696,7 +696,8 @@ def do_capture(body):
         'file': fname, 'batch': batch, 'index': index, 'bytes': len(raw),
         'captured_at': datetime.datetime.now().replace(microsecond=0).isoformat(),
         'luma': frame.get('luma', settings.get('luma')),
-        'fill': frame.get('fill'), 'dx': frame.get('dx'), 'dy': frame.get('dy'),
+        'fill': frame.get('fill'), 'fill_raw': frame.get('fill_raw'), 'fill_k': frame.get('fill_k'),
+        'dx': frame.get('dx'), 'dy': frame.get('dy'),
         'aligned': frame.get('aligned')})
     mp = os.path.join(dest, CAPTURE_MANIFEST)
     with open(mp + '.tmp', 'w') as fh:
@@ -1158,6 +1159,48 @@ def do_add(body):
     return {'ok': True, 'session': date, 'mean': row['mean']}
 
 
+DEFAULT_PICO_TO_BOX = 1.12     # one calibration image; a person's own data replaces it
+
+
+def fill_calibration(name):
+    """How this person's live face-size estimate maps to the pipeline's face
+    box, learned from their own scored sessions.
+
+    The camera screen estimates face size with a small detector; the pipeline
+    measures it with a different one. The ratio between them is stable for a
+    face but differs between faces (glasses, hairline, beard). Every scored
+    camera session has both numbers per frame, so the ratio is measured
+    rather than assumed, and the live gate uses the measured one.
+    """
+    base = os.path.join(subj_dir(name), 'sessions')
+    if not os.path.isdir(base):
+        return None
+    ratios = []
+    for label in sorted(os.listdir(base)):
+        m = capture_manifest(name, label) if DATE_RE.match(label) else None
+        if not m:
+            continue
+        per = os.path.join(results_dir(name), '%s_per_image.csv' % label)
+        if not os.path.exists(per):
+            continue
+        try:
+            measured = {i['file']: i['fill'] for i in pf.load_per_image(per)}
+        except SystemExit:
+            continue
+        for f in m.get('frames', []):
+            raw = f.get('fill_raw')
+            if raw is None and f.get('fill'):
+                raw = f['fill'] / DEFAULT_PICO_TO_BOX
+            got = measured.get(f.get('file'))
+            if raw and got:
+                ratios.append(got / raw)
+    if len(ratios) < 5:
+        return None
+    ratios.sort()
+    k = ratios[len(ratios) // 2] if len(ratios) % 2 else (ratios[len(ratios) // 2 - 1] + ratios[len(ratios) // 2]) / 2
+    return {'k': round(k, 3), 'n': len(ratios)}
+
+
 def do_preflight(person, date):
     """Diagnose the session -- but only if the QA on disk still describes the
     photos that are staged now.
@@ -1312,6 +1355,7 @@ def state(person=None, date=None, browse=None):
                   # the camera step runs before any frame exists, so it cannot
                   # infer the source from the session: ask for the Mac's directly
                   'baseline_camera': baseline_info(person, 'mac-camera'),
+                  'fill_calibration': fill_calibration(person),
                   'preflight': do_preflight(person, date)})
     return s
 
@@ -1809,11 +1853,17 @@ var CROP = {h:0.667, aspect:0.75};
    bar 80%. The live detector reports a face size about 0.89 of that box, measured
    on the authors’ own acceptable image, so its readings are scaled by this. */
 var PICO_TO_BOX = 1.12;
+/* The factor actually used: learned from this person’s scored sessions once
+   there are enough matched frames, the one-image default until then. */
+function boxFactor(){ return (S && S.fill_calibration && S.fill_calibration.k) || PICO_TO_BOX; }
 /* The detector centres on the eyes and nose, above the middle of the face box,
    so a box centred in the frame reads as a detection centre near 0.44. */
 /* fillMin carries margin above the pipeline bar of 80%: a live estimate is
    not the measurement, and a frame under the bar is a frame set aside. */
-var TARGET = {fillMin:0.76, fillMax:0.86, cy:0.44, tolX:0.06, tolY:0.07, lumaTol:5, lumaBlock:12, lumaLow:60, lumaHigh:215};
+/* fill limits are in pipeline units (face box over saved frame height): the
+   bar is 0.80, so 0.84 leaves margin for the estimate; 0.95 keeps the whole
+   face inside the frame. Until the conversion is learned, more margin. */
+var TARGET = {fillMin:0.84, fillMinUncal:0.87, fillMax:0.95, cy:0.44, tolX:0.06, tolY:0.07, lumaTol:3, lumaBlock:12, lumaLow:60, lumaHigh:215};
 /* How the live brightness is measured. Bump this whenever the measure changes:
    a reading only ever compares against a baseline reading taken the same way. */
 var LUMA_METHOD = 'box-rgb-2';
@@ -2086,7 +2136,7 @@ function detect(v, R){
      over the face box (forehead to chin, about 0.79 as wide as tall), whose
      centre sits a little below the detector centre. Without a face, the oval. */
   var f = CAM.face;
-  var bh = f ? f.s*PICO_TO_BOX*rh : rh*0.85, bw = bh*0.79;
+  var bh = f ? f.s*boxFactor()*rh : rh*0.85, bw = bh*0.79;
   var cx = f ? rx0 + f.cx*rw : rx0 + rw/2, cy = f ? ry0 + (f.cy+0.07)*rh : ry0 + rh*0.5;
   var y0 = Math.max(0, Math.round(cy-bh/2)), y1 = Math.min(Hd, Math.round(cy+bh/2));
   var x0 = Math.max(0, Math.round(cx-bw/2)), x1 = Math.min(Wd, Math.round(cx+bw/2));
@@ -2121,9 +2171,10 @@ function guidance(){
     CAM.posOk = false; state = 'none';
     msg = CAM.guideErr ? 'Face guide unavailable. Line up with the oval by eye.' : 'Looking for your face…';
   } else {
-    var dx = f.cx - 0.5, dy = f.cy - TARGET.cy, fill = f.s;
+    var dx = f.cx - 0.5, dy = f.cy - TARGET.cy, fill = f.s*boxFactor();
+    var fillMin = (S.fill_calibration ? TARGET.fillMin : TARGET.fillMinUncal);
     var fixes = [];
-    if(fill < TARGET.fillMin) fixes.push(fill < TARGET.fillMin-0.12 ? 'Come closer' : 'Come a little closer');
+    if(fill < fillMin) fixes.push(fill < fillMin-0.12 ? 'Come closer' : 'Come a little closer');
     else if(fill > TARGET.fillMax) fixes.push('Move back a little');
     if(Math.abs(dx) > TARGET.tolX) fixes.push((1-f.cx) < 0.5 ? 'Move a little to your right' : 'Move a little to your left');
     if(Math.abs(dy) > TARGET.tolY) fixes.push(dy < 0 ? 'Sit a little lower, or tilt the screen up' : 'Sit up a little, or tilt the screen down');
@@ -2149,7 +2200,8 @@ function guidance(){
       (CAM.exposure ? ' · '+CAM.exposure : '');
   }
   var fe = document.getElementById('camfill');
-  if(fe) fe.innerHTML = f ? 'face <b>'+Math.round(f.s*PICO_TO_BOX*100)+'%</b> of frame height'
+  if(fe) fe.innerHTML = f ? 'face <b>'+Math.round(f.s*boxFactor()*100)+'%</b> of frame height'+
+                              (S.fill_calibration ? '' : ' <span class="dim">(estimate, calibrates after the first analysis)</span>')
                           : (CAM.best!=null ? '<span class="dim">no face yet (best guess scored '+CAM.best+')</span>' : '');
 
   if(CAM.aligned && CAM.armed && !CAM.running && CAM.stream && now()-CAM.alignedSince >= HOLD_MS) startCapture();
@@ -2221,7 +2273,9 @@ function startCapture(){
     var img, f = CAM.face;
     try { img = grabFrame(); } catch(e){ return finish(e); }
     var frame = {luma: CAM.luma!=null ? Math.round(CAM.luma*10)/10 : null,
-                 fill: f ? Math.round(f.s*PICO_TO_BOX*1000)/1000 : null,
+                 fill: f ? Math.round(f.s*boxFactor()*1000)/1000 : null,
+                 fill_raw: f ? Math.round(f.s*1000)/1000 : null,
+                 fill_k: Math.round(boxFactor()*1000)/1000,
                  dx: f ? Math.round((f.cx-0.5)*1000)/1000 : null,
                  dy: f ? Math.round((f.cy-TARGET.cy)*1000)/1000 : null,
                  aligned: !!CAM.posOk};
