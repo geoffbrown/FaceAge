@@ -63,6 +63,7 @@ IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.heic', '.heif')
 sys.path.insert(0, HERE)
 import faceage_preflight as pf          # noqa: E402
 import faceage_analysis as fa            # noqa: E402
+import faceage_backup as fb              # noqa: E402
 
 # The §1 pre-committed validity conditions, phrased as things to confirm. Each
 # is a condition under which the session does NOT count; leaving one unconfirmed
@@ -623,6 +624,66 @@ class Job(object):
 JOB = Job()
 
 
+class Backups(object):
+    """Runs `faceage backup` for the app, one at a time, off the request
+    thread. The tracker is the thing a person cannot get back, so it is
+    backed up the moment it changes (do_add) and on every start, without
+    anyone having to remember. Status is what the footer shows."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = False
+        self.last = None          # summary of the last run, or None
+        self.error = None         # message of the last failure, or None
+
+    def status(self):
+        st = fb.status(DATA)
+        with self.lock:
+            st.update({'running': self.running, 'error': self.error,
+                       'last_run': self.last})
+        return st
+
+    def run(self, reason=''):
+        """Back up now. Returns the summary, or raises fb.BackupError."""
+        with self.lock:
+            if self.running:
+                raise RuntimeError('a backup is already running')
+            self.running, self.error = True, None
+        try:
+            r = fb.backup(DATA)
+            with self.lock:
+                self.last = dict(r, reason=reason)
+            return r
+        except (fb.BackupError, OSError) as exc:
+            with self.lock:
+                self.error = str(exc)
+            sys.stderr.write('backup failed (%s): %s\n' % (reason or 'manual', exc))
+            raise fb.BackupError(str(exc))
+        finally:
+            with self.lock:
+                self.running = False
+
+    def run_async(self, reason=''):
+        """Back up in the background if one is set up. Never raises: this
+        is called from actions that have already succeeded."""
+        if not fb.backup_dir(DATA):
+            return False
+        with self.lock:
+            if self.running:
+                return False
+
+        def go():
+            try:
+                self.run(reason)
+            except (fb.BackupError, RuntimeError):
+                pass
+        threading.Thread(target=go, daemon=True).start()
+        return True
+
+
+BACKUPS = Backups()
+
+
 # ----------------------------------------------------------------------------
 # actions
 # ----------------------------------------------------------------------------
@@ -1165,6 +1226,7 @@ def do_remove(body):
             (gone[0].get('mean') or '') if gone else '',
             'yes' if after_b else 'no', reason or '(none given)'))
     build_chart(name)
+    BACKUPS.run_async('session removed')
     return {'ok': True, 'session': date, 'after_baseline_anchor': after_b,
             'remaining': len(keep)}
 
@@ -1347,6 +1409,9 @@ def do_add(body):
         fh.write('%s,%s,%s\n' % (date, row['run_timestamp'], row['mean']))
 
     build_chart(name)
+    # The series just changed: that is the moment it is worth copying off
+    # this Mac. In the background, so the number comes back at once.
+    BACKUPS.run_async('session added')
     return {'ok': True, 'session': date, 'mean': row['mean']}
 
 
@@ -1494,6 +1559,36 @@ def do_reveal(body):
     return {'ok': True, 'path': path}
 
 
+def do_backup(body):
+    """Set up, run, or show the backup. `set` takes the folder; the path
+    is the person's own choice, so it is the one place the app writes
+    outside the data folder -- and it refuses a folder inside it."""
+    action = body.get('action') or 'run'
+    if action == 'set':
+        d = (body.get('dir') or '').strip()
+        if not d:
+            raise ValueError('choose a folder for the backup')
+        try:
+            fb.set_backup_dir(d, DATA)
+        except fb.BackupError as exc:
+            raise ValueError(str(exc))
+    elif action == 'reveal':
+        d = fb.backup_dir(DATA)
+        if not d or not os.path.isdir(d):
+            raise ValueError('no backup folder yet')
+        reveal_path(d)
+        return {'ok': True, 'backup': BACKUPS.status()}
+    elif action != 'run':
+        raise ValueError('action must be set, run or reveal')
+    if not fb.backup_dir(DATA):
+        raise ValueError('no backup location set')
+    try:
+        r = BACKUPS.run('app')
+    except fb.BackupError as exc:
+        raise ValueError(str(exc))
+    return {'ok': True, 'result': r, 'backup': BACKUPS.status()}
+
+
 def do_notes(body):
     """Save session notes typed into the tracker.
 
@@ -1568,7 +1663,7 @@ def state(person=None, date=None, browse=None):
          'inbox_path': INBOX, 'browse': listing,
          'inbox': listing['images'], 'data_path': DATA,
          'checklist_items': [{'key': k, 'label': l} for k, l in CHECKLIST],
-         'job': JOB.snapshot()}
+         'job': JOB.snapshot(), 'backup': BACKUPS.status()}
     if person:
         s.update({'staged': staged(person, date),
                   'checklist': read_checklist(person, date),
@@ -1858,6 +1953,10 @@ details.notes .note{margin-top:8px}
 .done-big h2{margin-bottom:6px}
 .foot{margin-top:28px;font-size:12px;color:var(--ink3);text-align:center}
 .foot code{font-size:11.5px}
+.foot .sep{margin:0 6px;color:var(--line)}
+.foot a{color:var(--accent);text-decoration:none;cursor:pointer}
+.foot a:hover{text-decoration:underline}
+.foot .warnink{color:var(--warn)}
 </style></head><body><div class="wrap">
 <div class="top">
   <div class="brand">FaceAge</div>
@@ -1958,7 +2057,8 @@ function render(){
   var step = stepOf();
   if(!(ui.tab==='capture' && step===2 && ui.photoMode==='camera')){ camStop(); ui.camWanted = false; }
   document.getElementById('foot').innerHTML =
-    'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>';
+    'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>'+
+    '<span class="sep">·</span>'+backupLine(S.backup||{});
   document.getElementById('tabs').innerHTML = S.person
     ? '<button class="'+(ui.tab==='capture'?'on':'')+'" onclick="setTab(\'capture\')">New session</button>'+
       '<button class="'+(ui.tab==='progress'?'on':'')+'" onclick="setTab(\'progress\')">Progress</button>' : '';
@@ -2001,6 +2101,52 @@ function toast(msg){
   var t = document.getElementById('toast'); if(!t) return;
   t.textContent = msg; t.hidden = false; setTimeout(function(){ t.hidden = true; }, 2600);
 }
+
+/* ---- backup ------------------------------------------------------------- */
+/* The photos and the series are the one thing a new Mac cannot rebuild, so
+   the footer always says whether they exist somewhere else, and offers to
+   make it so in one step. The copy runs itself after every tracker change. */
+function ago(iso){
+  if(!iso) return 'never';
+  var t = Date.parse(iso); if(isNaN(t)) return iso;
+  var s = Math.max(0, (Date.now()-t)/1000);
+  if(s < 90) return 'just now';
+  if(s < 3600) return Math.round(s/60)+' min ago';
+  if(s < 86400*1.5) return Math.round(s/3600)+' h ago';
+  return Math.round(s/86400)+' days ago';
+}
+function backupLine(b){
+  if(b.running) return 'Backing up\u2026';
+  if(!b.configured)
+    return '<span class="warnink">Not backed up anywhere yet.</span> '+
+           '<a onclick="setupBackup()">Set up a backup</a>';
+  if(!b.reachable)
+    return '<span class="warnink">Backup folder not reachable ('+h(b.label)+').</span> '+
+           '<a onclick="setupBackup()">Change</a>';
+  var s;
+  if(b.error) s = '<span class="warnink">Backup failed: '+h(b.error)+'</span>';
+  else if(!b.last) s = 'Backup to '+h(b.label)+' has not run yet';
+  else s = 'Backed up to <a onclick="revealBackup()" title="Show in Finder">'+h(b.label)+'</a> '+ago(b.last)+
+           (b.pending ? ' \u00b7 '+b.pending+' file'+(b.pending===1?'':'s')+' changed since' : '');
+  return s+'<span class="sep">·</span><a onclick="runBackup()">Back up now</a>';
+}
+function setupBackup(){
+  var b = S.backup||{};
+  var d = prompt('Where should the backup live? Pick a folder that leaves this Mac: '+
+                 'iCloud Drive, Dropbox, or an external disk.', b.dir || b.suggested || '');
+  if(!d) return;
+  document.getElementById('foot').textContent = 'Backing up\u2026';
+  api('/api/backup', {action:'set', dir:d.trim()})
+    .then(function(j){ toast('Backed up '+j.result.files+' files to '+(j.backup.label||d)); load(); })
+    .catch(function(e){ toast(e.message); load(); });
+}
+function runBackup(){
+  document.getElementById('foot').textContent = 'Backing up\u2026';
+  api('/api/backup', {action:'run'})
+    .then(function(j){ var r = j.result; toast(r.new+r.changed ? 'Backed up: '+(r.new+r.changed)+' file'+(r.new+r.changed===1?'':'s')+' copied' : 'Backup is up to date'); load(); })
+    .catch(function(e){ toast(e.message); load(); });
+}
+function revealBackup(){ api('/api/backup', {action:'reveal'}).catch(fail); }
 if(typeof window !== 'undefined' && window.addEventListener){
   window.addEventListener('message', function(e){
     var d = e.data || {};
@@ -2949,6 +3095,7 @@ ROUTES_POST = {
     '/api/delete': do_delete,
     '/api/person/rename': do_rename,
     '/api/person/profile': do_profile,
+    '/api/backup': do_backup,
 }
 
 
@@ -3056,6 +3203,11 @@ def main(argv=None):
     print('Ctrl-C to stop.')
     if '--no-open' not in argv:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    if fb.backup_dir(DATA):
+        print('backup : %s' % fb.brief(fb.status(DATA)))
+        threading.Timer(2.0, lambda: BACKUPS.run_async('app start')).start()
+    else:
+        print('backup : not set up -- the app footer offers it, or: faceage backup')
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

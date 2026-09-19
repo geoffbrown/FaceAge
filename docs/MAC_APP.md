@@ -129,6 +129,9 @@ Progress, which is the tracker page embedded in the app.
   the app offers to update the shell rc too.
 - **Subjects already exist** in the CLI (`--subject`), with independent sessions, results,
   history and tracker. The app is a front end on that model, not a new one.
+- **Backup is a verified mirror of the data root** (`tools/faceage_backup.py`, README §6):
+  iCloud Drive by default, run by the app after every tracker change. A new Mac is
+  `install.sh` + `faceage restore`. Nothing below about sync is needed for durability.
 
 ### iCloud
 
