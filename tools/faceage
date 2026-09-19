@@ -589,6 +589,22 @@ cmd_reset() {
   info "Restart 'faceage app' and add yourself again; the first session sets the new baseline."
 }
 
+cmd_backup() {
+  # faceage backup                 back up to the remembered place (iCloud Drive by default)
+  # faceage backup /path           set the place, then back up
+  # faceage backup --status        when, where, and how many files have changed since
+  # faceage backup --verify        re-hash the whole copy against its manifest
+  # faceage backup --archive F.zip one portable file, for AirDrop or a USB stick
+  FACEAGE_DATA="$DATA" FACEAGE_REPO="$REPO" \
+    python3 "$REPO/tools/faceage_backup.py" backup "$@"
+}
+
+cmd_restore() {
+  # faceage restore SRC [--merge|--replace]   SRC is a backup folder or .zip
+  FACEAGE_DATA="$DATA" FACEAGE_REPO="$REPO" \
+    python3 "$REPO/tools/faceage_backup.py" restore "$@"
+}
+
 cmd_subjects() {
   local base="$DATA/subjects"
   [[ -d "$base" ]] || die "no subjects yet — run a session first"
@@ -624,6 +640,7 @@ cmd_doctor() {
   printf 'active subject   : %s\n' "$SUBJECT"
   printf 'sessions found   : %s\n' "$(find "$SESSIONS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
   printf 'history rows     : %s\n' "$([[ -f "$HISTORY" ]] && echo $(($(wc -l < "$HISTORY")-1)) || echo 0)"
+  printf 'backup           : %s\n' "$(FACEAGE_DATA="$DATA" FACEAGE_REPO="$REPO" python3 "$REPO/tools/faceage_backup.py" status --brief 2>/dev/null || echo 'NOT SET UP  (faceage backup)')"
 }
 
 migrate_legacy
@@ -647,6 +664,8 @@ case "$sub" in
   subjects) cmd_subjects ;;
   reset)    cmd_reset "$@" ;;
   tidy)     cmd_tidy "$@" ;;
+  backup)   cmd_backup "$@" ;;
+  restore)  cmd_restore "$@" ;;
   sensitivity) cmd_sensitivity "$@" ;;
   tolerance) cmd_tolerance "$@" ;;
   build)    cmd_build ;;
@@ -681,6 +700,13 @@ FaceAge — local scoring pipeline
   faceage tidy [--all]       move discarded and replaced sessions to the Trash
                              (--all: also sessions never added to a tracker)
   faceage reset              start fresh: move ALL data aside (nothing deleted)
+  faceage backup [DIR]       copy every photo, result and setting to DIR (iCloud
+                             Drive by default), verified; runs itself after each
+                             session once set up.  --status  --verify
+                             --archive FILE.zip (one file, for a USB stick)
+  faceage restore SRC        put a backup onto this Mac (folder or .zip);
+                             --merge adds what is missing, --replace moves the
+                             existing data aside first
   faceage validate [tol]     re-run validation against the authors' CSV
   faceage build              (re)build the linux/amd64 container image
   faceage doctor             check environment, weights hash, session count

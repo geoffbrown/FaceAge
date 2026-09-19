@@ -1807,5 +1807,96 @@ class TestState(WebTestCase):
                                 'photoday', 'skin'])
 
 
+class TestBackup(WebTestCase):
+    """The footer promise -- 'backed up to X, N min ago' -- is only true if
+    the app runs the backup itself when the series changes."""
+
+    def setUp(self):
+        WebTestCase.setUp(self)
+        self.dest = tempfile.mkdtemp()
+        self.w.BACKUPS = self.w.Backups()
+        self.w.fb.DATA = self.data
+        self.person()
+        self.put_inbox('IMG_1.jpg')
+        self.w.do_import({'person': 'me', 'date': '2026-09-13', 'files': ['IMG_1.jpg']})
+
+    def tearDown(self):
+        shutil.rmtree(self.dest, ignore_errors=True)
+        WebTestCase.tearDown(self)
+
+    def test_state_says_not_set_up(self):
+        b = self.w.state()['backup']
+        self.assertFalse(b['configured'])
+        self.assertFalse(b['running'])
+        self.assertIsNone(b['error'])
+
+    def test_set_backs_up_at_once_and_is_remembered(self):
+        r = self.w.do_backup({'action': 'set', 'dir': self.dest})
+        self.assertTrue(r['ok'])
+        self.assertGreater(r['result']['files'], 0)
+        self.assertTrue(os.path.exists(os.path.join(self.dest, 'manifest.json')))
+        b = self.w.state()['backup']
+        self.assertTrue(b['configured'])
+        self.assertEqual(b['dir'], self.dest)
+        self.assertIsNotNone(b['last'])
+        self.assertEqual(b['pending'], 0)
+        self.assertEqual(self.w.settings()['backup_dir'], self.dest)
+
+    def test_refuses_a_folder_inside_the_data(self):
+        with self.assertRaises(ValueError):
+            self.w.do_backup({'action': 'set', 'dir': os.path.join(self.data, 'backup')})
+        with self.assertRaises(ValueError):
+            self.w.do_backup({'action': 'set', 'dir': ''})
+
+    def test_run_before_setup_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.w.do_backup({'action': 'run'})
+        with self.assertRaises(ValueError):
+            self.w.do_backup({'action': 'bogus'})
+
+    def test_adding_to_the_tracker_backs_up(self):
+        self.w.do_backup({'action': 'set', 'dir': self.dest})
+        calls = []
+        self.w.BACKUPS.run_async = lambda reason='': calls.append(reason) or True
+        with open(os.path.join(self.w.results_dir('me'), '2026-09-13_summary.json'), 'w') as fh:
+            json.dump({'n': 9, 'n_total_images': 10, 'n_failed': 1, 'n_flagged': 0,
+                       'mean': 44.1, 'median': 44.0, 'std': 0.8, 'min': 43, 'max': 45,
+                       'luma': 121.3, 'session_date': '2026-09-13'}, fh)
+        self.w.do_checklist({'person': 'me', 'date': '2026-09-13',
+                             'answers': {k: True for k, _ in self.w.CHECKLIST}})
+        self.w.do_add({'person': 'me', 'date': '2026-09-13'})
+        self.assertEqual(calls, ['session added'])
+        self.w.do_remove({'person': 'me', 'date': '2026-09-13', 'reason': 'test'})
+        self.assertEqual(calls, ['session added', 'session removed'])
+
+    def test_run_async_is_a_no_op_until_set_up(self):
+        self.assertFalse(self.w.BACKUPS.run_async('x'))
+
+    def test_run_async_really_backs_up(self):
+        import time
+        self.w.fb.set_backup_dir(self.dest, self.data)
+        self.assertTrue(self.w.BACKUPS.run_async('test'))
+        for _ in range(100):
+            if self.w.BACKUPS.last:
+                break
+            time.sleep(0.02)
+        self.assertEqual(self.w.BACKUPS.last['reason'], 'test')
+        self.assertTrue(self.w.fb.verify(self.dest)['ok'])
+
+    def test_failure_is_shown_not_swallowed(self):
+        gone = os.path.join(self.dest, 'Volumes', 'Gone', 'FaceAge')
+        self.w.fb.set_backup_dir(gone, self.data)
+        with self.assertRaises(ValueError):
+            self.w.do_backup({'action': 'run'})
+        b = self.w.state()['backup']
+        self.assertFalse(b['reachable'])
+        self.assertIn('does not exist', b['error'])
+
+    def test_page_has_the_footer_wiring(self):
+        for needle in ('function backupLine', 'function setupBackup', 'function runBackup',
+                       "'/api/backup'", 'Not backed up anywhere yet'):
+            self.assertIn(needle, self.w.PAGE)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

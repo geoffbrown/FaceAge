@@ -226,10 +226,25 @@ step "Result"
 # ---------------------------------------------------------------------------
 FACEAGE_REPO="$REPO" "$WRAPPER" doctor || true
 
+# Moving from another Mac: if that Mac backed up to iCloud Drive, the copy is
+# already here. Say so, with the one command that brings it back.
+ICLOUD_BACKUP="$HOME/Library/Mobile Documents/com~apple~CloudDocs/FaceAge Backup"
+RESTORE_HINT=""
+if [[ -f "$ICLOUD_BACKUP/manifest.json" ]] \
+   && [[ -z "$(find "$DATA/subjects" -type f -not -name '.DS_Store' 2>/dev/null | head -1)" ]]; then
+  WRITTEN="$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print("%s on %s, %d files" % (m.get("written_at","?"), (m.get("wrote") or {}).get("host","?"), len(m.get("files",{}))))' "$ICLOUD_BACKUP/manifest.json" 2>/dev/null || true)"
+  RESTORE_HINT="
+$(printf '\033[1mA FaceAge backup is in your iCloud Drive\033[0m') ($WRITTEN).
+This Mac has no sessions yet. Bring everything over with:
+
+  faceage restore \"$ICLOUD_BACKUP\"
+"
+fi
+
 cat <<EOF
 
 $(printf '\033[32mInstall complete.\033[0m')
-
+$RESTORE_HINT
 Open a new terminal (or run: source ${RC:-your shell rc}) so \`faceage\` is on PATH.
 
 Then confirm the environment reproduces the authors' published numbers:
@@ -246,4 +261,12 @@ And to score a session:
 
 Read README section 3 before your first capture — lighting is the dominant
 confound, and an inconsistent setup will manufacture change that isn't real.
+
+Moving from another Mac? Restore its backup (a folder or a .zip):
+
+  faceage restore "/path/to/FaceAge Backup"
+
+And set this Mac up to keep backing up, so the next move is one command too:
+
+  faceage backup            # iCloud Drive by default; or: faceage backup /Volumes/Disk/FaceAge
 EOF

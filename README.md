@@ -294,7 +294,7 @@ except the 10-minute build.
 |---|---|---|
 | **Model weights** (92 MB) | Redistributable only from the authors' release, and too large for git | `install.sh` downloads and hash-verifies it automatically |
 | **Validation images** (`validation/images/`) | Other people's faces; the authors never published the curated set to Zenodo | **Manual** — see section 4 |
-| **Your photos and results** | Biometric data, deliberately kept outside git | Stay in `~/FaceAgeData/` on each machine, per-machine |
+| **Your photos and results** | Biometric data, deliberately kept outside git | `faceage restore` from the backup — section 6 |
 
 Only the validation images need a manual step, and only if you want to re-prove
 environment fidelity on the new machine — `faceage validate` exits with
@@ -338,7 +338,75 @@ faceage validate    # needs validation/images/ — see section 4
 
 ---
 
-## 6. Deviations from the authors' environment
+## 6. Backup, and moving to a new Mac
+
+Everything the installer sets up — the VM, the container image, Rosetta, the
+weights, `PATH` — is rebuilt from scratch in ten minutes. The one thing that
+cannot be rebuilt is `~/FaceAgeData`: the photos, the per-image results and the
+series. That is what the backup covers, and only that.
+
+```bash
+faceage backup                    # iCloud Drive by default; verified copy
+faceage backup /Volumes/T7/FaceAge    # or anywhere that leaves this Mac
+faceage backup --status           # when, where, how many files changed since
+faceage backup --verify           # re-hash the whole copy against its manifest
+faceage backup --archive move.zip # one file, for AirDrop or a USB stick
+```
+
+Once a location is set, **the app keeps the backup current on its own**: it
+runs after every session added to (or removed from) the tracker and on each
+start, and the page footer says where the copy is and when it was last
+written. Nothing is uploaded anywhere the app does not already have a folder;
+iCloud Drive is simply a folder that Apple syncs.
+
+The backup is a plain copy, not a format:
+
+| Path | What |
+|---|---|
+| `data/` | `~/FaceAgeData`, file for file — photos open in Finder, the series is a CSV |
+| `manifest.json` | sha256 of every file, plus what machine and commit wrote it |
+| `attic/<when>/` | earlier versions of anything changed or removed; nothing here is ever deleted |
+| `README.txt` | how to restore, for a person with no code |
+
+Every copied file is re-hashed after writing. `--verify` re-hashes the whole
+mirror. `restore` refuses a mirror that does not match its manifest. Each run
+copies only what changed, so a session adds a few megabytes, not a fresh
+gigabyte.
+
+### On the new Mac
+
+```bash
+git clone https://github.com/geoffbrown/FaceAge.git ~/Documents/GitHub/FaceAge
+~/Documents/GitHub/FaceAge/tools/install.sh
+faceage restore "~/Library/Mobile Documents/com~apple~CloudDocs/FaceAge Backup"
+faceage doctor
+```
+
+If the backup is in iCloud Drive, the installer notices and prints that exact
+`restore` line. `restore` accepts a backup folder or a `--archive` zip, verifies
+it in full first, and then:
+
+- into an empty data folder: just copies;
+- `--merge`: adds only what this Mac lacks, never overwrites, and lists any
+  file that exists on both sides with different contents;
+- `--replace`: moves the existing data folder aside as `~/FaceAgeData.archive-<when>`
+  (nothing deleted, same as `faceage reset`) and restores into a clean one.
+
+Restoring from a folder also makes that folder the new Mac's backup location,
+so the next move is the same one command.
+
+Two things this deliberately is not. It is not a hosted tracker: the photos are
+the asset, the series is derived from them, and the repo's design rule is that
+no image leaves the machine (`docs/MAC_APP.md`, "Accounts and sync"). A synced
+folder gives off-machine durability with no account, no server, and nothing
+to keep alive for the years a longitudinal series runs. And it is not a
+substitute for Migration Assistant or Time Machine — both carry
+`~/FaceAgeData` across as part of your home folder. This is the copy that
+exists when the laptop does not.
+
+---
+
+## 7. Deviations from the authors' environment
 
 The pipeline reproduces the authors' published numbers exactly, so none of the following
 shifted the results. Recorded for completeness.
