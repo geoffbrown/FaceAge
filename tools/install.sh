@@ -9,18 +9,20 @@
 #   ./tools/install.sh              full install
 #   ./tools/install.sh --rebuild    force the container image to rebuild
 #   ./tools/install.sh --skip-build set everything up but don't build the image
+#   ./tools/install.sh --yes        don't ask before installing Rosetta 2
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 WRAPPER="$SCRIPT_DIR/faceage"
 
-REBUILD=0; SKIP_BUILD=0
+REBUILD=0; SKIP_BUILD=0; ASSUME_YES=0
 for a in "$@"; do
   case "$a" in
     --rebuild)    REBUILD=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
-    -h|--help)    sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -y|--yes)     ASSUME_YES=1 ;;
+    -h|--help)    sed -n '2,13p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *) printf 'unknown option: %s\n' "$a" >&2; exit 1 ;;
   esac
 done
@@ -116,12 +118,39 @@ done
 step "3/7  Rosetta 2"
 # ---------------------------------------------------------------------------
 if [[ "$APPLE_SILICON" -eq 1 && "$COLIMA_FLAGS" == *"--vz-rosetta"* ]]; then
-  # The VM's x86-64 translation is backed by Rosetta on the host.
-  if /usr/bin/pgrep -q oahd 2>/dev/null || [[ -d /Library/Apple/usr/libexec/oah ]]; then
+  # The VM's x86-64 translation is backed by Rosetta on the host. Test it by
+  # running an Intel binary: that succeeds only when Rosetta actually works,
+  # which a folder or process check cannot promise.
+  rosetta_works() { /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; }
+  ROSETTA_CMD="softwareupdate --install-rosetta --agree-to-license"
+  if rosetta_works; then
     ok "Rosetta 2 present"
   else
-    info "Installing Rosetta 2 (needed to run the linux/amd64 image)..."
-    softwareupdate --install-rosetta --agree-to-license
+    info "Rosetta 2 is not installed. It is Apple's free Intel-to-Apple-Silicon"
+    info "translator, and FaceAge needs it: the model runs in a linux/amd64 container"
+    info "that reproduces the authors' environment exactly. Installing it means"
+    info "accepting Apple's Rosetta licence."
+    if [[ "$ASSUME_YES" -eq 0 ]]; then
+      [[ -t 0 ]] || die "Rosetta 2 is needed. Re-run with --yes to install it, or install it yourself:
+  $ROSETTA_CMD"
+      read -r -p "Install Rosetta 2 now? [Y/n] " reply || reply=n
+      case "$reply" in
+        ''|[Yy]*) ;;
+        *) die "Rosetta 2 is needed to run FaceAge. Install it when ready with:
+  $ROSETTA_CMD
+then re-run this script." ;;
+      esac
+    fi
+    info "Installing Rosetta 2..."
+    softwareupdate --install-rosetta --agree-to-license || true
+    if ! rosetta_works; then
+      info "macOS needs an administrator password to finish installing Rosetta."
+      sudo softwareupdate --install-rosetta --agree-to-license || true
+    fi
+    rosetta_works || die "Rosetta 2 still does not work after installing. Try it by hand:
+  sudo $ROSETTA_CMD
+then re-run this script."
+    ok "Rosetta 2 installed and working"
   fi
 else
   ok "not needed on this machine"

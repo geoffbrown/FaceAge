@@ -5,8 +5,40 @@ on Apple Silicon to score face photographs and build a longitudinal series.
 
 Everything runs on this machine. No image ever leaves it.
 
-- Upstream code: <https://github.com/AIM-Harvard/FaceAge>
+- Official FaceAge code and weights (AIM Lab, Mass General Brigham / Harvard): <https://github.com/AIM-Harvard/FaceAge>
 - Paper: <https://www.thelancet.com/journals/landig/article/PIIS2589-7500(25)00042-1/fulltext>
+
+This is an independent wrapper around that official release. It runs the authors'
+model and weights unmodified, in a container that reproduces their environment
+(section 4 shows it matches their published numbers). It is not affiliated with or
+endorsed by the FaceAge authors.
+
+## Quick start
+
+**Who it's for:** anyone who wants to track their own FaceAge estimate over weeks or
+months (to see whether a change in routine moves it) without sending photos to a
+service.
+
+**You need:** an Apple Silicon Mac on macOS 13 or newer, [Homebrew](https://brew.sh),
+about 10 GB of free disk, and 15 minutes for the first install (mostly a one-time
+container build).
+
+```bash
+git clone https://github.com/geoffbrown/FaceAge.git ~/Documents/GitHub/FaceAge
+~/Documents/GitHub/FaceAge/tools/install.sh
+# open a new terminal, then:
+faceage doctor      # everything should say ok
+faceage app         # opens the app in your browser: add yourself, take photos, see the trend
+```
+
+The installer sets up everything else (container runtime, Rosetta 2, the model
+weights from the authors' release, `PATH`) and explains each step as it goes;
+section 5 has the details. Your photos and results stay in `~/FaceAgeData` and
+never enter git.
+
+FaceAge is a research model, not a medical test. Lighting and camera setup move
+its output by years (section 1), so treat it as a trend line from a fixed setup,
+not a verdict on one photo.
 
 ---
 
@@ -272,7 +304,10 @@ is skipped. It:
    Rosetta needs macOS 13 or newer on Apple Silicon.
 2. Installs `colima` and the `docker` CLI via Homebrew if they are missing —
    no Docker Desktop, no licence, no admin password.
-3. Installs Rosetta 2 if the `linux/amd64` image will need it.
+3. Checks that Rosetta 2 works by running an Intel binary. If it is missing, the
+   installer says why FaceAge needs it and asks before installing it (installing
+   means accepting Apple's Rosetta licence). macOS may ask for an administrator
+   password for this one step.
 4. Starts the Colima VM with the exact settings `tools/faceage` expects.
 5. Downloads the 92 MB model weights and **refuses to continue unless the
    sha256 matches** the AIM-Harvard release.
@@ -284,7 +319,7 @@ The installer reads the weights URL and hash, the image name and the VM flags
 out of `tools/faceage` rather than restating them, so the two cannot drift apart.
 
 Flags: `--rebuild` forces the image to rebuild; `--skip-build` does everything
-except the 10-minute build.
+except the 10-minute build; `--yes` installs Rosetta 2 without asking.
 
 `colima stop` shuts the VM down; `faceage run` restarts it automatically when needed.
 
@@ -308,8 +343,9 @@ rows) *is* tracked, so all you need to supply is the matching images.
 If you would rather not run the installer, it is equivalent to:
 
 ```bash
-# 1. Container runtime (no admin password, no Docker Desktop licence)
+# 1. Container runtime (no Docker Desktop licence) and Rosetta 2
 brew install colima docker
+arch -x86_64 /usr/bin/true || softwareupdate --install-rosetta --agree-to-license
 colima start --vm-type=vz --vz-rosetta --cpu 4 --memory 8 --disk 60
 
 # 2. This repo

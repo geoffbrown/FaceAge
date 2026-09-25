@@ -2,7 +2,9 @@
 
 **Drafted:** 2026-09-09
 **Amended:** 2026-09-12 — see [Amendments](#amendments)
-**Capture standard:** defers to `Younger 2027 — FaceAge Improvement Pro.md` §3
+**Capture standard:** defers to `docs/CAPTURE_STANDARD.md` §3 (lifted verbatim from the
+Improvement Protocol, `Younger 2027 — FaceAge Improvement Pro.md`, which is the author's
+personal plan and is kept outside this repo; its other sections are cited below by number)
 **Baseline (B):** not yet set — see [Calendar](#calendar). This decision is time-critical.
 **Retest (R):** chosen by me, ≥6 months after B, no later than 2027-08-01
 
@@ -36,7 +38,7 @@ This document does not forbid changing the plan. It forbids changing it *invisib
 ## Scope — what this document does and does not cover
 
 It deliberately does **not** restate the capture standard or the intervention plan. Those
-live in `Younger 2027 — FaceAge Improvement Pro.md` §3 and §4, and duplicating them here
+live in `docs/CAPTURE_STANDARD.md` §3 and the Improvement Protocol §4, and duplicating them here
 would create a third, drifting copy.
 
 This document commits only to the things that decide whether the resulting numbers can be
@@ -87,7 +89,7 @@ A single photograph is not interpretable.**
 
 ## 1. Capture — deferred, with pre-committed validity conditions
 
-The capture standard is `Younger 2027 — FaceAge Improvement Pro.md` §3, fixed at the
+The capture standard is `docs/CAPTURE_STANDARD.md` §3, fixed at the
 rehearsal sessions and never changed thereafter.
 
 What is pre-committed **here** is when a session does not count. A session is a **protocol
@@ -247,3 +249,4 @@ reported alongside the amended one.
 | 2026-09-12 | §1 | Camera condition reworded from "rear main camera only" to "same camera every time, phone propped at a marked distance — never hand-held, never ultrawide". | The front camera is the only practical option for solo capture. The concern behind "rear main" was perspective distortion of the midface at close range; with the phone propped at a fixed distance that distortion is a constant offset, and the series is a relative trend line (§7), so a constant offset cannot move it. What would move it is distance varying between sessions, which is what the reworded condition rules out. Amended before B is set. |
 | 2026-09-12 | §1 | Camera condition extended: the Mac's built-in camera, driven by the app with a fixed framing overlay, is an acceptable instrument alongside a propped phone. The condition now reads "one camera for the whole series … never switched". | The 2.2-year webcam-vs-phone gap in the README is a gap *between* two instruments, not noise *within* one. The series is a relative trend (§7), so any instrument that is fixed in place and never changed gives a constant offset that cannot move the slope. A Mac on a desk is, if anything, easier to keep fixed than a propped phone. What the condition must rule out is switching cameras mid-series: a session on a different camera from the rest is a §1 failure. The app records which camera produced each session (`capture.json`) and warns before a mixed session is added. Amended before B is set. |
 | 2026-09-12 | §1 (process) | How validity is recorded in the app: an exceptions strip ("Anything different today?") on the capture screen, recorded the moment capture starts, replaces the six-box form that preceded the photos. Camera, light and framing are measured by the capture and recorded from measurement, not asked. The criteria in §1 are unchanged. | The form was being clicked through with nothing ticked, which produced a record of "all six conditions failed" for sessions where nothing was wrong. An opt-in form that gets skipped is a worse record than an exceptions list whose default is honest. The record is still made before any number exists. |
+| 2026-09-25 | Header, §1 | The capture standard (Improvement Protocol §3) now lives in `docs/CAPTURE_STANDARD.md`, copied verbatim; the rest of the Improvement Protocol moved out of the repo. | The repo is being made public and the rest of that note is a personal health plan. No rule, threshold or analysis changes. |
