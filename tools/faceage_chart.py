@@ -771,7 +771,8 @@ tr.exc td.d{color:var(--text-muted);text-decoration:line-through}
 .sel-all{display:flex;gap:6px;align-items:center;font-size:13px}
 .help{border-bottom:1px dotted var(--text-muted);cursor:help}
 #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;max-width:280px;
-  background:var(--text-primary);color:var(--surface-1);padding:7px 10px;border-radius:8px;font-size:12.5px;line-height:1.4;z-index:9}
+  background:var(--text-primary);color:var(--surface-2);padding:7px 11px;border-radius:8px;font-size:12.5px;line-height:1.4;z-index:9;
+  box-shadow:0 2px 6px rgba(0,0,0,.12),0 10px 24px -8px rgba(0,0,0,.28)}
 #save-bar{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--accent);color:#fff;text-align:center;
   padding:10px;font-size:13px;font-weight:600;cursor:pointer;z-index:10}
 details.nerd summary{cursor:pointer;font-weight:600;color:var(--text-secondary);font-size:14px}
@@ -787,9 +788,9 @@ __CONS__
 __TABLE__
 __DETAILS__
 <p class="muted" style="text-align:center;margin-top:20px">Everything on this page stays on this Mac. Summary numbers only, no photographs.</p>
-</div>
-<div id="tip"></div>
+<div id="tip" role="tooltip"></div>
 <div id="save-bar">Save notes</div>
+</div>
 <script>
 'use strict';
 var SUBJ = '__SUBJ__';
