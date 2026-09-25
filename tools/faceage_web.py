@@ -1743,10 +1743,16 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .chip b{color:var(--ink)}
 .chip button{all:unset;cursor:pointer;color:var(--accent);font-size:12.5px;margin-left:2px}
 .chip button:hover{text-decoration:underline}
-.chip.person{padding:3px 3px 3px 14px;gap:10px;border-color:var(--line);background:var(--line)}
-.chip .pillbtn{all:unset;cursor:pointer;padding:7px 16px;border-radius:99px;background:var(--card);
-  color:var(--ink);font-size:14px;font-weight:600;margin:0;box-shadow:0 1px 2px rgba(0,0,0,.06)}
-.chip .pillbtn:hover{text-decoration:none;filter:brightness(.98)}
+.chip.person{padding:4px 4px 4px 4px;gap:8px;background:var(--card);border-color:var(--line);font-size:14px}
+.chip.person .av{width:26px;height:26px;border-radius:50%;display:inline-grid;place-items:center;
+  background:var(--line);color:var(--ink);font-size:12.5px;font-weight:700}
+.chip.person b{font-weight:600;margin-right:4px}
+.chip.person b:last-child{margin-right:10px}
+.chip .pillbtn{all:unset;cursor:pointer;padding:5px 12px;border-radius:99px;border:1px solid var(--line);
+  color:var(--ink2);font-size:13px;font-weight:600;margin:0}
+.chip .pillbtn:hover{text-decoration:none;color:var(--ink);background:var(--bg)}
+.chip .pillbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.backlink{margin:-6px 0 10px -10px}
 .people{list-style:none;margin:0 0 16px;padding:0;border:1px solid var(--line);border-radius:12px}
 .people li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}
 .people li:last-child{border-bottom:0}
@@ -1953,10 +1959,12 @@ details.notes .note{margin-top:8px}
 .done-big h2{margin-bottom:6px}
 .foot{margin-top:28px;font-size:12px;color:var(--ink3);text-align:center}
 .foot code{font-size:11.5px}
-.foot .sep{margin:0 6px;color:var(--line)}
+.foot .sep{margin:0 6px;color:var(--ink3)}
 .foot a{color:var(--accent);text-decoration:none;cursor:pointer}
 .foot a:hover{text-decoration:underline}
 .foot .warnink{color:var(--warn)}
+.foot.credit{margin-top:8px;line-height:1.7}
+.foot.credit b{color:var(--ink2);font-weight:600}
 </style></head><body><div class="wrap">
 <div class="top">
   <div class="brand">FaceAge</div>
@@ -1967,6 +1975,7 @@ details.notes .note{margin-top:8px}
 <div id="app"></div>
 <div id="toast" class="toast" hidden></div>
 <p class="foot" id="foot"></p>
+<p class="foot credit">Scores come from <b>FaceAge</b>, the model published by the AIM Lab at Mass General Brigham / Harvard (Bontempi et al., <i>Lancet Digital Health</i>, 2025), run unmodified on this Mac.<br><a href="https://www.thelancet.com/journals/landig/article/PIIS2589-7500(25)00042-1/fulltext" target="_blank" rel="noopener">Read the paper</a><span class="sep">·</span><a href="https://github.com/AIM-Harvard/FaceAge" target="_blank" rel="noopener">Official FaceAge code</a><span class="sep">·</span><a href="https://github.com/geoffbrown/FaceAge" target="_blank" rel="noopener">This app&#8217;s source</a></p>
 </div>
 <script src="/static/pico.js"></script>
 <script>
@@ -2060,10 +2069,11 @@ function render(){
     'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>'+
     '<span class="sep">·</span>'+backupLine(S.backup||{});
   document.getElementById('tabs').innerHTML = S.person
-    ? '<button class="'+(ui.tab==='capture'?'on':'')+'" onclick="setTab(\'capture\')">New session</button>'+
-      '<button class="'+(ui.tab==='progress'?'on':'')+'" onclick="setTab(\'progress\')">Progress</button>' : '';
+    ? '<button class="'+(ui.tab==='capture'&&!ui.choosing?'on':'')+'" onclick="setTab(\'capture\')">New session</button>'+
+      '<button class="'+(ui.tab==='progress'&&!ui.choosing?'on':'')+'" onclick="setTab(\'progress\')">Progress</button>' : '';
   document.getElementById('who').innerHTML = S.person
-    ? '<span class="chip person"><b>'+h(S.person)+'</b><button class="pillbtn" onclick="changePerson()">Change</button></span>' : '';
+    ? '<span class="chip person"><span class="av" aria-hidden="true">'+h(S.person.charAt(0).toUpperCase())+'</span>'+
+      '<b>'+h(S.person)+'</b>'+(ui.choosing ? '' : '<button class="pillbtn" onclick="changePerson()" aria-label="Change person">Change</button>')+'</span>' : '';
 
   var o = [];
   if(ui.tab==='progress' && S.person){
@@ -2085,7 +2095,7 @@ function render(){
   wire();
 }
 
-function setTab(t){ ui.tab = t; render(); }
+function setTab(t){ ui.tab = t; ui.choosing = false; render(); }
 function cardProgressTab(){
   var logged = personInfo().logged;
   if(!logged)
@@ -2161,7 +2171,8 @@ function doneRow(label, value, change){
 
 /* ---- 1 · who --------------------------------------------------------------- */
 function cardWho(){
-  var o = ['<div class="card"><h2>Who are we measuring?</h2>',
+  var o = ['<div class="card">'+(S.person ? '<button class="quiet backlink" onclick="setTab(\'capture\')">\u2190 Back to '+h(S.person)+'</button>' : '')+
+           '<h2>Who are we measuring?</h2>',
            '<p class="lead">Each person gets their own tracker. Nothing is compared between people.</p>'];
   if(S.people.length){
     o.push('<ul class="people">');
