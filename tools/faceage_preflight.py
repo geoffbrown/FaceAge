@@ -8,7 +8,7 @@ same principle docs/PREREGISTRATION.md §1 applies to protocol failures.
 
 A flag is not the product. "mean_luma 127.4" tells you nothing you can act on.
 Every finding here carries a specific remedy tied to the capture standard in
-README §"Keep the capture setup identical" and the Improvement Protocol §3.
+README §"Keep the capture setup identical" and docs/CAPTURE_STANDARD.md §3.
 
 Nothing in here modifies a photograph. If a check fails the answer is always to
 reshoot -- fix the light, not the file. Software-normalising exposure would hide
@@ -33,7 +33,7 @@ LUMA_WARN = LUMA_TOL / 2  # early warning at half the tolerance, before it becom
 LUMA_SPREAD_TOL = 5.0     # variation WITHIN one session
 MIN_FACE_FILL = 0.80      # authors' Supplement Table 1, as linear frame height
 MIN_CONFIDENCE = 0.95
-EXPECT_FRAMES = 10        # Improvement Protocol §3: "10 frames per session"
+EXPECT_FRAMES = 10        # docs/CAPTURE_STANDARD.md §3: "10 frames per session"
 
 RESHOOT, CHECK, INFO = 'RESHOOT', 'CHECK', 'INFO'
 _RANK = {RESHOOT: 0, CHECK: 1, INFO: 2}

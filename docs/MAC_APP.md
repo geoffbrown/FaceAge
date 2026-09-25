@@ -219,5 +219,6 @@ If it does not, steps 2 and 3 are not worth doing.
 - Does the contest kit prescribe a capture app or photo format that constrains any of this?
 - Is a watched-folder import enough, or is a Photos-library picker needed in practice?
 - Which machine owns scoring, given the two-Mac setup?
-- `Younger 2027 — FaceAge Protocol.md` (capture/measurement) is referenced in §1 of the
+- `Younger 2027 — FaceAge Protocol.md` (capture/measurement) is referenced by the
   Improvement Protocol but is not in this repo. It may constrain the QA checklist above.
+  The Improvement Protocol's capture standard is in `docs/CAPTURE_STANDARD.md`.
