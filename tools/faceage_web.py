@@ -2091,7 +2091,7 @@ function cardProgressTab(){
   if(!logged)
     return '<div class="card"><h2>Nothing to show yet</h2><p class="lead">Your progress page appears after the first session is added to the tracker.</p>'+
            '<div class="cta"><button class="primary" onclick="setTab(\'capture\')">Take the first session</button></div></div>';
-  return '<iframe class="trk" id="trk" title="Progress" src="/tracker?person='+encodeURIComponent(S.person)+'&embed=1&t='+Date.now()+'"></iframe>';
+  return '<iframe class="trk" id="trk" aria-label="Progress" src="/tracker?person='+encodeURIComponent(S.person)+'&embed=1&t='+Date.now()+'"></iframe>';
 }
 function personInfo(){
   for(var i=0;i<S.people.length;i++) if(S.people[i].name===S.person) return S.people[i];
