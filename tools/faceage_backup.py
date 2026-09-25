@@ -343,7 +343,13 @@ def backup(src=None, dest=None, log=None):
         n_bytes += size
         log('  copied %s' % rel)
 
+    offloaded = set(evicted)
     for rel in prev_files:
+        if rel in offloaded:
+            # Still at the source, just offloaded to iCloud: the copy we
+            # already hold is the only one on a disk. Keep it as it is.
+            files[rel] = prev_files[rel]
+            continue
         if rel not in cur:
             to_attic(rel)
             n_removed += 1

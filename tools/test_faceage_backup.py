@@ -104,6 +104,18 @@ class TestBackup(BackupCase):
         self.assertEqual(r['evicted'], ['subjects/me/sessions/2026-09-12/IMG_3.jpg'])
         self.assertEqual(fb.read_manifest(self.dest)['evicted_at_source'], r['evicted'])
 
+    def test_source_file_offloaded_to_icloud_is_not_treated_as_removed(self):
+        rel = 'subjects/me/sessions/2026-09-12/IMG_1.jpg'
+        fb.backup(self.data, self.dest)
+        before = fb.read_manifest(self.dest)['files'][rel]
+        os.unlink(os.path.join(self.data, rel))
+        write(self.data, 'subjects/me/sessions/2026-09-12/.IMG_1.jpg.icloud', b'stub')
+        r = fb.backup(self.data, self.dest)
+        self.assertEqual(r['removed'], 0)
+        self.assertEqual(fb.read_manifest(self.dest)['files'][rel], before)
+        self.assertTrue(os.path.isfile(os.path.join(self.dest, 'data', rel)))
+        self.assertTrue(fb.verify(self.dest)['ok'])
+
     def test_refuses_backup_inside_the_data_folder(self):
         with self.assertRaises(fb.BackupError):
             fb.backup(self.data, os.path.join(self.data, 'backup'))
