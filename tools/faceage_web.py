@@ -14,7 +14,7 @@ THREE THINGS THIS ENFORCES, not merely offers
    bind address is not configurable.
 
 2. The validity checklist is answered BEFORE the score is requested, and the
-   answers are written before the pipeline is invoked (docs/PREREGISTRATION.md
+   answers are written before the pipeline is invoked (the pre-registration
    §1). A session invalidated after its number is known is not an exclusion, it
    is a result being discarded for being inconvenient. The server refuses to
    score a tracked session with no checklist on file.

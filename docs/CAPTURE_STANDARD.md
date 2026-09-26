@@ -1,8 +1,7 @@
 # Capture standard
 
-How to take the photos so that sessions can be compared. `docs/PREREGISTRATION.md`
-defers to this document for the capture standard and the photo-day controls; the
-app's checklist and `tools/faceage_preflight.py` implement it.
+How to take the photos so that sessions can be compared. The app's checklist and
+`tools/faceage_preflight.py` implement it.
 
 ## §3 Noise control
 

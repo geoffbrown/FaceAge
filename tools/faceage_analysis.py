@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pre-registered analysis for the local FaceAge series.
 
-Implements docs/PREREGISTRATION.md exactly. It does not offer alternatives:
+Implements the study's pre-registration (kept outside this repo) exactly. It does not offer alternatives:
 the point of a pre-registration is that the analysis was fixed before the data
 existed, so this file has no options for trying a different model form.
 
@@ -351,7 +351,7 @@ def report(rows, dropped, args, rehearsal=None, anchors=None, pre_b=None):
     out = []
     A = out.append
     A('=' * 74)
-    A('FACEAGE SERIES -- pre-registered analysis (docs/PREREGISTRATION.md)')
+    A('FACEAGE SERIES -- pre-registered analysis')
     A('=' * 74)
     A('sessions valid   : %d' % len(rows))
     if dropped:

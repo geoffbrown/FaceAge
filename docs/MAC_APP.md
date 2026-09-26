@@ -13,7 +13,7 @@ Not "score your face" — `faceage run` already does that. The app exists for on
 > trend slope to be estimable.**
 
 Weekly sampling roughly halves the minimum detectable change versus monthly, in the same
-window, for the same rigor (`docs/PREREGISTRATION.md` §3). The CLI has enough friction that
+window, for the same rigor (the pre-registration §3). The CLI has enough friction that
 monthly is what realistically happens. That gap is the whole product.
 
 ## What the app is not
@@ -24,7 +24,7 @@ The first draft of this section said "it is not the camera": capture stays on th
 because this repo's README measured a webcam-vs-phone gap of **2.2 years** on photos taken
 ten minutes apart. That number is still true, and it is still the reason the rule exists.
 But it is a gap *between* two instruments, not noise *within* one. The series is a relative
-trend line (`docs/PREREGISTRATION.md` §7): any camera that is fixed in place and never
+trend line (the pre-registration §7): any camera that is fixed in place and never
 changed contributes a constant offset, and a constant offset cannot move a slope.
 
 So the web app now offers the Mac's built-in camera as an **option beside import**. The
@@ -111,7 +111,7 @@ Progress, which is the tracker page embedded in the app.
      photographic confound.
    - face fill, head level, detection confidence — surfaced as the pipeline's existing
      advisory flags, shown before the run rather than discovered in a CSV afterward.
-   - a **session-validity checklist** from `docs/PREREGISTRATION.md` §1 (makeup, photo-day
+   - a **session-validity checklist** from the pre-registration §1 (makeup, photo-day
      controls, lighting geometry, camera/lens). Answered **before** the score is computed,
      because a session invalidated after its number is known is a result being discarded
      for being inconvenient.
@@ -194,7 +194,7 @@ touch the number.
 
 **Do not start building until σ — between-session measurement noise — is known.**
 
-The repeatability study (`docs/PREREGISTRATION.md` §4) measures it: five sessions in seven
+The repeatability study (the pre-registration §4) measures it: five sessions in seven
 days, identical rig, where real change is ≈ 0.
 
 | σ (yr) | Decision |
@@ -219,6 +219,3 @@ If it does not, steps 2 and 3 are not worth doing.
 - Does the contest kit prescribe a capture app or photo format that constrains any of this?
 - Is a watched-folder import enough, or is a Photos-library picker needed in practice?
 - Which machine owns scoring, given the two-Mac setup?
-- `Younger 2027 — FaceAge Protocol.md` (capture/measurement) is referenced by the
-  Improvement Protocol but is not in this repo. It may constrain the QA checklist above.
-  The Improvement Protocol's capture standard is in `docs/CAPTURE_STANDARD.md`.

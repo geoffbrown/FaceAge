@@ -142,9 +142,10 @@ terminal. `faceage help` lists them all; the useful ones:
 | `faceage doctor` | check the install |
 
 Add `--subject NAME` to work with someone else's series, or `--no-log` to score
-photos without recording anything. `docs/PREREGISTRATION.md` describes the
-pre-registered analysis (`faceage analyse`, `gate`, `trend`, `anchor`,
-`invalidate`).
+photos without recording anything. `faceage analyse`, `gate`, `trend`, `anchor`
+and `invalidate` run a fixed statistical analysis of a series (repeatability,
+trend with a confidence interval, a brightness check); `faceage help` describes
+each.
 
 ## Does it match the authors?
 

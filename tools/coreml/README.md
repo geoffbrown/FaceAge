@@ -5,7 +5,7 @@ regressor half only, and parity is **not yet demonstrated**. Read the status
 table before using any of it.
 
 > The app build itself is gated on the repeatability study
-> (`docs/PREREGISTRATION.md` §4, σ unknown until the 2026-09-17 session). This
+> (the pre-registration §4, σ unknown until the 2026-09-17 session). This
 > work is upstream of that gate: it establishes whether the port is *feasible*
 > and what it costs. Nothing here commits to building the app.
 

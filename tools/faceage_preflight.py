@@ -4,7 +4,7 @@
 Runs BEFORE the session is scored. That ordering is the point. You learn whether
 the capture was good without learning what the number was, so the decision to
 reshoot cannot be influenced by whether you liked the result -- which is the
-same principle docs/PREREGISTRATION.md §1 applies to protocol failures.
+same principle the pre-registration §1 applies to protocol failures.
 
 A flag is not the product. "mean_luma 127.4" tells you nothing you can act on.
 Every finding here carries a specific remedy tied to the capture standard in

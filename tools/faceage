@@ -88,7 +88,7 @@ Open the session folder in Finder to force a download, then re-run.
 Scoring now would silently compute the session mean over a subset."
 }
 
-# §1 of docs/PREREGISTRATION.md: a protocol failure is recorded BEFORE the score
+# §1 of the pre-registration: a protocol failure is recorded BEFORE the score
 # is looked at. Scoring an already-invalidated session is allowed - it just will
 # not enter the analysis - but it should never be a surprise.
 warn_if_invalidated() {
@@ -568,7 +568,7 @@ else:
     print('brightness tolerance set to %s for every camera' % n)
 json.dump(d, open(f, 'w'), indent=2)
 PY
-  info "record this in docs/PREREGISTRATION.md under Amendments if the study has started"
+  info "if you keep a study protocol, record this change in it"
 }
 
 cmd_reset() {
