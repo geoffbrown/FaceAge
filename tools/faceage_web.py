@@ -1662,6 +1662,7 @@ def state(person=None, date=None, browse=None):
     s = {'people': people, 'person': person, 'date': date, 'today': today,
          'inbox_path': INBOX, 'browse': listing,
          'inbox': listing['images'], 'data_path': DATA,
+         'data_label': ('~' + DATA[len(HOME):]) if DATA.startswith(HOME + os.sep) else DATA,
          'checklist_items': [{'key': k, 'label': l} for k, l in CHECKLIST],
          'job': JOB.snapshot(), 'backup': BACKUPS.status()}
     if person:
@@ -1714,8 +1715,9 @@ body{margin:0;background:var(--bg);color:var(--ink);
 
 /* header */
 .top{display:flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap}
-.tabs{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--line)}
-.tabs button{padding:7px 16px;border:0;border-radius:99px;background:transparent;color:var(--ink2);font-weight:600;font-size:14px}
+:root{--hdr-h:40px}
+.tabs{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--line);box-sizing:border-box;height:var(--hdr-h)}
+.tabs button{display:inline-flex;align-items:center;padding:0 16px;border:0;border-radius:99px;background:transparent;color:var(--ink2);font-weight:600;font-size:14px}
 .tabs button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
 .tabs button:hover:not(.on){background:transparent;color:var(--ink)}
 .sessbar{display:flex;align-items:center;gap:10px;margin:0 0 14px;flex-wrap:wrap}
@@ -1743,15 +1745,18 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .chip b{color:var(--ink)}
 .chip button{all:unset;cursor:pointer;color:var(--accent);font-size:12.5px;margin-left:2px}
 .chip button:hover{text-decoration:underline}
-.chip.person{padding:4px 4px 4px 4px;gap:8px;background:var(--card);border-color:var(--line);font-size:14px}
-.chip.person .av{width:26px;height:26px;border-radius:50%;display:inline-grid;place-items:center;
-  background:var(--line);color:var(--ink);font-size:12.5px;font-weight:700}
-.chip.person b{font-weight:600;margin-right:4px}
-.chip.person b:last-child{margin-right:10px}
-.chip .pillbtn{all:unset;cursor:pointer;padding:5px 12px;border-radius:99px;border:1px solid var(--line);
-  color:var(--ink2);font-size:13px;font-weight:600;margin:0}
-.chip .pillbtn:hover{text-decoration:none;color:var(--ink);background:var(--bg)}
-.chip .pillbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.whobtn{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:9px;height:var(--hdr-h);
+  padding:3px 14px 3px 3px;border-radius:99px;background:var(--card);border:1px solid var(--line);
+  font-size:14px;color:var(--ink);cursor:pointer;transition:background .12s,border-color .12s}
+.whobtn .av{width:32px;height:32px;border-radius:50%;display:inline-grid;place-items:center;flex:none;
+  background:var(--line);color:var(--ink);font-size:13px;font-weight:700}
+.whobtn b{font-weight:600}
+.whobtn .chev{width:10px;height:10px;color:var(--ink3);transition:transform .15s}
+.whobtn:hover{border-color:var(--ink3)}
+.whobtn[aria-expanded="true"]{background:var(--line);border-color:var(--line)}
+.whobtn[aria-expanded="true"] .av{background:var(--card)}
+.whobtn[aria-expanded="true"] .chev{transform:rotate(180deg)}
+.whobtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .backlink{margin:-6px 0 10px -10px}
 .people{list-style:none;margin:0 0 16px;padding:0;border:1px solid var(--line);border-radius:12px}
 .people li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}
@@ -1957,14 +1962,21 @@ details.notes .note{margin-top:8px}
 .done-big .tick{width:56px;height:56px;border-radius:50%;background:var(--good-bg);color:var(--good);
   display:inline-flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;margin-bottom:12px}
 .done-big h2{margin-bottom:6px}
-.foot{margin-top:28px;font-size:12px;color:var(--ink3);text-align:center}
-.foot code{font-size:11.5px}
-.foot .sep{margin:0 6px;color:var(--ink3)}
+.foot{margin-top:32px;padding-top:16px;border-top:1px solid var(--line);font-size:12.5px;line-height:1.6;color:var(--ink3);
+  display:grid;grid-template-columns:1fr auto;gap:6px 32px;align-items:start}
+.foot .fcol{display:flex;flex-direction:column;gap:3px;min-width:0}
+.foot .fcol.right{text-align:right;align-items:flex-end}
+.foot .fline{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.foot b{color:var(--ink2);font-weight:600}
+.foot code{font-size:11.5px;color:var(--ink2)}
+.foot .sep{margin:0 7px;color:var(--ink3)}
 .foot a{color:var(--accent);text-decoration:none;cursor:pointer}
 .foot a:hover{text-decoration:underline}
 .foot .warnink{color:var(--warn)}
-.foot.credit{margin-top:8px;line-height:1.7}
-.foot.credit b{color:var(--ink2);font-weight:600}
+.foot .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin:0 8px 1px 0;vertical-align:middle;background:var(--ink3)}
+.foot .dot.ok{background:var(--good)}
+.foot .dot.warn{background:var(--warn)}
+@media (max-width:640px){.foot{grid-template-columns:1fr}.foot .fcol.right{text-align:left;align-items:flex-start}}
 </style></head><body><div class="wrap">
 <div class="top">
   <div class="brand">FaceAge</div>
@@ -1974,8 +1986,7 @@ details.notes .note{margin-top:8px}
 </div>
 <div id="app"></div>
 <div id="toast" class="toast" hidden></div>
-<p class="foot" id="foot"></p>
-<p class="foot credit">Scores come from <b>FaceAge</b>, the model published by the AIM Lab at Mass General Brigham / Harvard (Bontempi et al., <i>Lancet Digital Health</i>, 2025), run unmodified on this Mac.<br><a href="https://www.thelancet.com/journals/landig/article/PIIS2589-7500(25)00042-1/fulltext" target="_blank" rel="noopener">Read the paper</a><span class="sep">·</span><a href="https://github.com/AIM-Harvard/FaceAge" target="_blank" rel="noopener">Official FaceAge code</a><span class="sep">·</span><a href="https://github.com/geoffbrown/FaceAge" target="_blank" rel="noopener">This app&#8217;s source</a></p>
+<footer class="foot"><div class="fcol" id="foot"></div><div class="fcol right"><span class="fline">Scores by&nbsp;<b>FaceAge</b>&nbsp;· AIM Lab, Mass General Brigham / Harvard</span><span class="fline"><a href="https://www.thelancet.com/journals/landig/article/PIIS2589-7500(25)00042-1/fulltext" target="_blank" rel="noopener">Paper</a><span class="sep">·</span><a href="https://github.com/AIM-Harvard/FaceAge" target="_blank" rel="noopener">Official code</a><span class="sep">·</span><a href="https://github.com/geoffbrown/FaceAge" target="_blank" rel="noopener">This app&#8217;s source</a></span></div></footer>
 </div>
 <script src="/static/pico.js"></script>
 <script>
@@ -2066,14 +2077,15 @@ function render(){
   var step = stepOf();
   if(!(ui.tab==='capture' && step===2 && ui.photoMode==='camera')){ camStop(); ui.camWanted = false; }
   document.getElementById('foot').innerHTML =
-    'Everything stays on this Mac. Data in <code>'+h(S.data_path)+'</code>'+
-    '<span class="sep">·</span>'+backupLine(S.backup||{});
+    '<span class="fline">Stored only on this Mac<span class="sep">·</span><code title="'+h(S.data_path)+'">'+h(S.data_label||S.data_path)+'</code></span>'+
+    '<span class="fline"><span class="dot '+backupTone(S.backup||{})+'"></span>'+backupLine(S.backup||{})+'</span>';
   document.getElementById('tabs').innerHTML = S.person
     ? '<button class="'+(ui.tab==='capture'&&!ui.choosing?'on':'')+'" onclick="setTab(\'capture\')">New session</button>'+
       '<button class="'+(ui.tab==='progress'&&!ui.choosing?'on':'')+'" onclick="setTab(\'progress\')">Progress</button>' : '';
   document.getElementById('who').innerHTML = S.person
-    ? '<span class="chip person"><span class="av" aria-hidden="true">'+h(S.person.charAt(0).toUpperCase())+'</span>'+
-      '<b>'+h(S.person)+'</b>'+(ui.choosing ? '' : '<button class="pillbtn" onclick="changePerson()" aria-label="Change person">Change</button>')+'</span>' : '';
+    ? '<button class="whobtn" onclick="toggleWho()" aria-expanded="'+(ui.choosing?'true':'false')+'" title="Change person">'+
+      '<span class="av" aria-hidden="true">'+h(S.person.charAt(0).toUpperCase())+'</span><b>'+h(S.person)+'</b>'+
+      '<svg class="chev" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' : '';
 
   var o = [];
   if(ui.tab==='progress' && S.person){
@@ -2125,6 +2137,11 @@ function ago(iso){
   if(s < 86400*1.5) return Math.round(s/3600)+' h ago';
   return Math.round(s/86400)+' days ago';
 }
+function backupTone(b){
+  if(b.running) return '';
+  if(!b.configured || !b.reachable || b.error || !b.last) return 'warn';
+  return b.pending ? '' : 'ok';
+}
 function backupLine(b){
   if(b.running) return 'Backing up\u2026';
   if(!b.configured)
@@ -2145,13 +2162,13 @@ function setupBackup(){
   var d = prompt('Where should the backup live? Pick a folder that leaves this Mac: '+
                  'iCloud Drive, Dropbox, or an external disk.', b.dir || b.suggested || '');
   if(!d) return;
-  document.getElementById('foot').textContent = 'Backing up\u2026';
+  document.getElementById('foot').innerHTML = '<span class="fline">Backing up\u2026</span>';
   api('/api/backup', {action:'set', dir:d.trim()})
     .then(function(j){ toast('Backed up '+j.result.files+' files to '+(j.backup.label||d)); load(); })
     .catch(function(e){ toast(e.message); load(); });
 }
 function runBackup(){
-  document.getElementById('foot').textContent = 'Backing up\u2026';
+  document.getElementById('foot').innerHTML = '<span class="fline">Backing up\u2026</span>';
   api('/api/backup', {action:'run'})
     .then(function(j){ var r = j.result; toast(r.new+r.changed ? 'Backed up: '+(r.new+r.changed)+' file'+(r.new+r.changed===1?'':'s')+' copied' : 'Backup is up to date'); load(); })
     .catch(function(e){ toast(e.message); load(); });
@@ -2171,7 +2188,7 @@ function doneRow(label, value, change){
 
 /* ---- 1 · who --------------------------------------------------------------- */
 function cardWho(){
-  var o = ['<div class="card">'+(S.person ? '<button class="quiet backlink" onclick="setTab(\'capture\')">\u2190 Back to '+h(S.person)+'</button>' : '')+
+  var o = ['<div class="card">'+(S.person ? '<button class="quiet backlink" onclick="setTab(\'capture\')">\u2190 Back</button>' : '')+
            '<h2>Who are we measuring?</h2>',
            '<p class="lead">Each person gets their own tracker. Nothing is compared between people.</p>'];
   if(S.people.length){
@@ -2997,6 +3014,7 @@ function refreshUseBtn(){
 /* ---- actions --------------------------------------------------------------- */
 function pickPerson(name){ S.person = name; S.date = null; sel = {}; ui.choosing = false; ui.flags = {}; ui.flagNote = ''; load(); }
 function changePerson(){ ui.choosing = true; ui.tab = 'capture'; render(); }
+function toggleWho(){ if(ui.choosing) setTab('capture'); else changePerson(); }
 function renamePerson(name){
   var n = prompt('Rename '+name+' to:', name);
   if(!n || n.trim()===name) return;
@@ -3170,7 +3188,7 @@ class Handler(BaseHTTPRequestHandler):
                     page = fh.read()
                 if q.get('embed'):
                     # inside the app the page header is the app header
-                    page = page.replace('</head>', '<style>.top{display:none}body,.viz-root{background:transparent}'
+                    page = page.replace('</head>', '<style>.top,.privacy{display:none}body,.viz-root{background:transparent}'
                                                    '.viz-root{padding:4px 4px 12px}</style></head>')
                 return self._send(200, page, 'text/html')
             return self._json({'error': 'not found'}, 404)

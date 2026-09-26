@@ -787,7 +787,7 @@ __CHART__
 __CONS__
 __TABLE__
 __DETAILS__
-<p class="muted" style="text-align:center;margin-top:20px">Everything on this page stays on this Mac. Summary numbers only, no photographs.</p>
+<p class="muted privacy" style="text-align:center;margin-top:20px">Everything on this page stays on this Mac. Summary numbers only, no photographs.</p>
 <div id="tip" role="tooltip"></div>
 <div id="save-bar">Save notes</div>
 </div>
