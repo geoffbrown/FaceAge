@@ -8,7 +8,7 @@ same principle docs/PREREGISTRATION.md §1 applies to protocol failures.
 
 A flag is not the product. "mean_luma 127.4" tells you nothing you can act on.
 Every finding here carries a specific remedy tied to the capture standard in
-README §"Keep the capture setup identical" and docs/CAPTURE_STANDARD.md §3.
+docs/TECHNICAL.md "Measured capture sensitivity" and docs/CAPTURE_STANDARD.md §3.
 
 Nothing in here modifies a photograph. If a check fails the answer is always to
 reshoot -- fix the light, not the file. Software-normalising exposure would hide
@@ -26,7 +26,7 @@ import json
 import math
 import argparse
 
-# The capture standard's tolerance. README: "Keep it within roughly +/-5 of
+# The capture standard's tolerance. docs/TECHNICAL.md: "Keep it within roughly +/-5 of
 # prior sessions. If it drifts, treat that session's change as suspect."
 LUMA_TOL = float(os.environ.get('FACEAGE_LUMA_TOL') or 5.0)   # set with `faceage tolerance`
 LUMA_WARN = LUMA_TOL / 2  # early warning at half the tolerance, before it becomes a reshoot

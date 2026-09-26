@@ -259,7 +259,7 @@ cmd_validate() {
   mkdir -p "$REPO/validation/runs"
   local n
   n=$(find "$REPO/validation/images" -maxdepth 1 -type f -iname '*.jpg' 2>/dev/null | wc -l | tr -d ' ')
-  [[ "$n" -gt 0 ]] || die "no validation images in $REPO/validation/images (see README)"
+  [[ "$n" -gt 0 ]] || die "no validation images in $REPO/validation/images (see docs/TECHNICAL.md)"
   info "Validating against the authors' reference CSV using $n image(s)..."
   docker run --rm --platform linux/amd64 \
     -v "$REPO/validation/images:/work/input:ro" \
@@ -673,11 +673,13 @@ case "$sub" in
   *) cat <<USAGE
 FaceAge — local scoring pipeline
 
+  faceage app                start here: the app, in your browser (take or
+                             import photos, check, score, see your trend)
+
   faceage run                score today's session folder
   faceage run YYYY-MM-DD     score that session folder
   faceage run FOLDER         score a folder of photos directly
   faceage run FILE...        stage those photos into today's session and score
-  faceage app                open the local web UI (import, check, score, chart)
   faceage preflight [DATE]   what is wrong with the capture, and what to do
   faceage compare D1 D2...   two sittings side by side, photo by photo: face
                              size, brightness, confidence, FaceAge

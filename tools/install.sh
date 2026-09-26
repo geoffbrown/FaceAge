@@ -274,28 +274,19 @@ cat <<EOF
 
 $(printf '\033[32mInstall complete.\033[0m')
 $RESTORE_HINT
-Open a new terminal (or run: source ${RC:-your shell rc}) so \`faceage\` is on PATH.
+Open a new terminal (or run: source ${RC:-your shell rc}) so \`faceage\` is on PATH,
+then start the app:
 
-Then confirm the environment reproduces the authors' published numbers:
+  faceage app
 
-  # one-time: put a few UTK images in validation/images/ (see README section 4)
-  faceage validate
+It opens in your browser and walks you through your first session. Before you
+take any photos, open "How to set up the shot" in it: lighting and camera setup
+move the number more than months of real change do.
 
-And to score a session:
-
-  mkdir -p "$DATA/subjects/me/sessions/\$(date +%F)"
-  # copy 8-12 .jpg/.png photos in, then:
-  faceage run
-  faceage chart
-
-Read README section 3 before your first capture — lighting is the dominant
-confound, and an inconsistent setup will manufacture change that isn't real.
-
-Moving from another Mac? Restore its backup (a folder or a .zip):
+Moving from another Mac? Restore its backup (a folder or a .zip) first:
 
   faceage restore "/path/to/FaceAge Backup"
 
-And set this Mac up to keep backing up, so the next move is one command too:
-
-  faceage backup            # iCloud Drive by default; or: faceage backup /Volumes/Disk/FaceAge
+Optional: to prove this install reproduces the authors' published numbers, see
+"Validation" in docs/TECHNICAL.md, then run: faceage validate
 EOF
