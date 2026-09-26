@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push origin HEAD:main)",
+      "Bash(git push origin main)",
+      "Bash(git push -u origin main)",
+      "mcp__github__merge_pull_request"
+    ]
+  },
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Pushing commits directly to the main branch of geoffbrown/FaceAge, or merging its pull requests, is allowed without a separate review: the repository owner asked for Claude to push straight to main."
+    ]
+  }
+}
