@@ -163,3 +163,11 @@ One thing worth knowing about the model: the authors deliberately did not tune i
 to guess chronological age, because that erased what makes FaceAge predictive of
 health. It is noisy by design, which is why the session average, never a single
 photo, is the number to watch.
+
+## License
+
+The code written for this repo is MIT licensed ([LICENSE](LICENSE)). The FaceAge
+model, its weights and the scoring core adapted from the authors' code are theirs:
+their release has no open-source license and is provided for reproducible research,
+not clinical care or commercial use, and those terms carry over to this app. The
+details are in [NOTICE](NOTICE).

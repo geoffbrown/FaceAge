@@ -1,0 +1,29 @@
+FaceAge (this repository) builds on the FaceAge release by the Artificial
+Intelligence in Medicine (AIM) Program, Mass General Brigham / Harvard Medical
+School:
+
+    https://github.com/AIM-Harvard/FaceAge
+    Bontempi et al., "FaceAge, a deep learning system to estimate biological
+    age from face photographs to improve prognostication", Lancet Digital
+    Health, 2025.
+
+What comes from that release, and is NOT covered by this repository's MIT
+license:
+
+  - The model weights (models/faceage_model.h5). They are not stored in this
+    repository; tools/install.sh downloads them from the authors' release and
+    checks their sha256.
+  - The numerical core of src/faceage_run.py (image loading, face detection,
+    cropping and the prediction call), which is kept deliberately identical to
+    the authors' src/test/predict_folder_demo.py so that results match theirs.
+  - validation/reference/utk_hi-res_qa_res.csv, the authors' published output,
+    used only to check this pipeline against theirs.
+
+The AIM-Harvard release carries no open-source license. Its README states that
+"the code and data of this repository are provided to promote reproducible
+research. They are not intended for clinical care or commercial use." Those
+terms apply to the parts listed above, and so to any use of this app: it is for
+personal research use, not for clinical care and not for commercial use.
+
+This project is independent and is not affiliated with or endorsed by the
+FaceAge authors.

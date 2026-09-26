@@ -70,7 +70,7 @@ class TestValidation(WebTestCase):
                 self.w.safe_subject(bad)
 
     def test_accepts_reasonable_names(self):
-        for good in ('me', 'jackie', 'Geoff_B', 'test-1'):
+        for good in ('me', 'dana', 'Alex_B', 'test-1'):
             self.assertEqual(self.w.safe_subject(good), good)
 
     def test_rejects_bad_dates(self):
@@ -100,9 +100,9 @@ class TestValidation(WebTestCase):
 class TestPeople(WebTestCase):
     def test_create_and_list(self):
         self.person('me')
-        self.person('jackie')
+        self.person('dana')
         names = [p['name'] for p in self.w.list_people()]
-        self.assertEqual(names, ['jackie', 'me'])
+        self.assertEqual(names, ['dana', 'me'])
 
     def test_duplicate_refused(self):
         self.person('me')
@@ -111,13 +111,13 @@ class TestPeople(WebTestCase):
 
     def test_series_are_independent(self):
         self.person('me')
-        self.person('jackie')
+        self.person('dana')
         self.history('me', '2026-09-11', luma=121.3)
-        self.history('jackie', '2026-09-11', luma=98.0)
+        self.history('dana', '2026-09-11', luma=98.0)
         self.assertAlmostEqual(self.w.baseline_luma('me'), 121.3)
-        self.assertAlmostEqual(self.w.baseline_luma('jackie'), 98.0)
+        self.assertAlmostEqual(self.w.baseline_luma('dana'), 98.0)
         self.assertTrue(self.w.session_scored('me', '2026-09-11'))
-        self.assertFalse(self.w.session_scored('jackie', '2026-09-12'))
+        self.assertFalse(self.w.session_scored('dana', '2026-09-12'))
 
     def test_no_combined_view_exists(self):
         """There must be no endpoint or helper that returns two people's
@@ -130,20 +130,20 @@ class TestRename(WebTestCase):
     def test_renames_the_folder(self):
         self.person('me')
         self.history('me', '2026-09-11')
-        r = self.w.do_rename({'old': 'me', 'new': 'Geoffrey'})
-        self.assertEqual(r['name'], 'Geoffrey')
+        r = self.w.do_rename({'old': 'me', 'new': 'Alexander'})
+        self.assertEqual(r['name'], 'Alexander')
         self.assertFalse(os.path.isdir(self.w.subj_dir('me')))
-        self.assertTrue(self.w.session_scored('Geoffrey', '2026-09-11'))
+        self.assertTrue(self.w.session_scored('Alexander', '2026-09-11'))
 
     def test_refuses_to_clobber(self):
-        self.person('me'); self.person('jackie')
+        self.person('me'); self.person('dana')
         with self.assertRaises(ValueError):
-            self.w.do_rename({'old': 'me', 'new': 'jackie'})
+            self.w.do_rename({'old': 'me', 'new': 'dana'})
 
     def test_validates_the_new_name(self):
         self.person('me')
         with self.assertRaises(ValueError):
-            self.w.do_rename({'old': 'me', 'new': 'Geoff Brown'})
+            self.w.do_rename({'old': 'me', 'new': 'Alex Doe'})
 
 
 class TestImport(WebTestCase):

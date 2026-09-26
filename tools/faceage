@@ -715,8 +715,8 @@ FaceAge — local scoring pipeline
 
 Everyone's data is kept separate. Your own is subject '$DEFAULT_SUBJECT'.
 
-  faceage run --subject jackie ~/Desktop/jackie/*.jpg
-  faceage chart --subject jackie
+  faceage run --subject dana ~/Desktop/dana/*.jpg
+  faceage chart --subject dana
   faceage run --no-log ~/Desktop/oneoff.jpg     # score, but log nothing
 
 Extra flags after 'run' pass through, e.g.
